@@ -68,7 +68,7 @@ public:
     std::string chain_work;
     std::string fee_data;
     std::string fee_distribution;
-    double median_fee;
+    int64_t median_fee;
     std::string output_data = "";
     std::string input_data = "";
 
