@@ -32,8 +32,9 @@
 #include <odb/result.hxx>
 #include <odb/transaction.hxx>
 
+#include <boost/accumulators/accumulators.hpp>
 #include <boost/accumulators/statistics/weighted_p_square_quantile.hpp>
-typedef accumulator_set<double, stats<tag::weighted_p_square_quantile>, double> accumulator_t;
+typedef boost::accumulators::accumulator_set<double, stats<tag::weighted_p_square_quantile>, double> accumulator_t;
 
 BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_block_index(block_index),
                                                                             m_block(block),
