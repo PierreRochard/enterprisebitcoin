@@ -32,6 +32,9 @@
 #include <odb/result.hxx>
 #include <odb/transaction.hxx>
 
+#include <boost/accumulators/statistics/weighted_p_square_quantile.hpp>
+typedef accumulator_set<double, stats<tag::weighted_p_square_quantile>, double> accumulator_t;
+
 BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_block_index(block_index),
                                                                             m_block(block),
                                                                             m_block_header_hash(block.GetBlockHeader().GetHash().GetHex())
@@ -64,6 +67,12 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             GetDifficulty(&m_block_index),         // difficulty
             m_block_index.nChainWork.GetHex()      // chain_work
     );
+
+    std::map<double, accumulator_set> accumulators;
+    for ( double n = 0.01; n < 1 ; n += 0.01 ) {
+        accumulator_t acc(quantile_probability = n);
+        acccumulators[n] = acc;
+    }
 
     for (std::size_t transaction_index = 0; transaction_index < m_block.vtx.size(); ++transaction_index) {
         const CTransactionRef& transaction = m_block.vtx[transaction_index];
@@ -168,7 +177,25 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         oss2 << transaction_data.GetFee();
         oss2 << ";";
         block_record.fee_data += oss2.str();
+
+        for ( double n = 0.01; n < 1 ; n += 0.01 ) {
+            acccumulators[n](transaction_data.GetFee()/transaction_data.vsize, weight=transaction_data.vsize);
+        }
     }
+
+    std::ostringstream oss3;
+    oss3 << "{";
+    for ( double n = 0.01; n < 1 ; n += 0.01 ) {
+        oss3 << "{";
+        oss3 << n;
+        oss3 << ", ";
+        oss3 << weighted_p_square_quantile(acccumulators[n]);
+        oss3 << "}";
+    }
+    oss3 << "}";
+
+    block_record.fee_distribution = oss3.str();
+    block_record.median_fee = weighted_p_square_quantile(accumulators[0.5])
 
     // Insert block into the database
     odb::transaction t(enterprise_database->begin(), false);

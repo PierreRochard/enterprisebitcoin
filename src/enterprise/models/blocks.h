@@ -67,6 +67,8 @@ public:
     double difficulty;
     std::string chain_work;
     std::string fee_data;
+    std::string fee_distribution;
+    std:double median_fee;
     std::string output_data = "";
     std::string input_data = "";
 
