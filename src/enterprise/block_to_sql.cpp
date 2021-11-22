@@ -189,17 +189,21 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
 
     std::ostringstream oss3;
     oss3 << "{";
-    for ( double n = 0.01; n < 1 ; n += 0.01 ) {
+    for(auto it = accumulators.cbegin(); it != accumulators.cend(); ++it)
+    {
         oss3 << "{";
-        oss3 << n;
+        oss3 << it->first;
         oss3 << ", ";
-        oss3 << weighted_p_square_quantile(accumulators[n]);
+        oss3 << weighted_p_square_quantile(it->second);
         oss3 << "}";
+        double median = 0.5;
+        if (std::abs(it->first - median) < 0.001) {
+            block_record.median_fee = weighted_p_square_quantile(it->second);
+        }
     }
     oss3 << "}";
 
     block_record.fee_distribution = oss3.str();
-    block_record.median_fee = weighted_p_square_quantile(accumulators[0.5])
 
     // Insert block into the database
     odb::transaction t(enterprise_database->begin(), false);
