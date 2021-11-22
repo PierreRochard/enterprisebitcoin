@@ -182,8 +182,9 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         oss2 << ";";
         block_record.fee_data += oss2.str();
 
-        for ( double n = 0.01; n < 1 ; n += 0.01 ) {
-            acccumulators[n](transaction_data.GetFee()/transaction_data.vsize, weight=transaction_data.vsize);
+        for(auto it = accumulators.cbegin(); it != accumulators.cend(); ++it)
+        {
+            it->second(transaction_data.GetFee()/transaction_data.vsize, weight=transaction_data.vsize);
         }
     }
 
