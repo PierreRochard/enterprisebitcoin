@@ -72,7 +72,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             m_block_index.nChainWork.GetHex()      // chain_work
     );
 
-    std::map<double, accumulator_set> accumulators;
+    std::map<double, accumulator_t> accumulators;
     for ( double n = 0.01; n < 1 ; n += 0.01 ) {
         accumulator_t acc(quantile_probability = n);
         acccumulators[n] = acc;
