@@ -74,8 +74,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
 
     std::map<double, accumulator_t> accumulators;
     for ( double n = 0.01; n < 1 ; n += 0.01 ) {
-        accumulator_t acc(quantile_probability = n);
-        accumulators[n] = acc;
+        accumulators.insert(std::make_pair(n, accumulator_t(quantile_probability = n)))
     }
 
     for (std::size_t transaction_index = 0; transaction_index < m_block.vtx.size(); ++transaction_index) {
