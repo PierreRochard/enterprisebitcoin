@@ -37,7 +37,7 @@
 
 using namespace boost::accumulators;
 
-typedef accumulator_set<double, stats<tag::weighted_p_square_quantile>, double> accumulator_t;
+typedef accumulator_set<CAmount, stats<tag::weighted_p_square_quantile>, unsigned int> accumulator_t;
 
 BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_block_index(block_index),
                                                                             m_block(block),
