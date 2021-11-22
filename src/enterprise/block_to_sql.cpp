@@ -33,6 +33,11 @@
 #include <odb/transaction.hxx>
 
 #include <boost/accumulators/accumulators.hpp>
+#include <boost/accumulators/statistics/count.hpp>
+#include <boost/accumulators/statistics/sum.hpp>
+#include <boost/accumulators/statistics/sum_kahan.hpp>
+#include <boost/accumulators/statistics/stats.hpp>
+#include <boost/accumulators/statistics/moment.hpp>
 #include <boost/accumulators/statistics/weighted_p_square_quantile.hpp>
 
 using namespace boost::accumulators;
@@ -80,7 +85,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
 
     std::map<double, accumulator_t> accumulators;
     for ( double n = 0.01; n < 1 ; n += 0.01 ) {
-        accumulators.insert(std::make_pair(n, accumulator_t a(quantile_probability = n)));
+        accumulators.insert(std::make_pair(n, accumulator_t(quantile_probability = n)));
     }
 
     for (std::size_t transaction_index = 0; transaction_index < m_block.vtx.size(); ++transaction_index) {
