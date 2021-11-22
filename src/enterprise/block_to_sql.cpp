@@ -34,7 +34,10 @@
 
 #include <boost/accumulators/accumulators.hpp>
 #include <boost/accumulators/statistics/weighted_p_square_quantile.hpp>
-typedef boost::accumulators::accumulator_set<double, stats<tag::weighted_p_square_quantile>, double> accumulator_t;
+
+using namespace boost::accumulators;
+
+typedef accumulator_set<double, stats<tag::weighted_p_square_quantile>, double> accumulator_t;
 
 BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_block_index(block_index),
                                                                             m_block(block),
