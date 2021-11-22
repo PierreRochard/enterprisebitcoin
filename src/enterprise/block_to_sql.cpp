@@ -37,7 +37,13 @@
 
 using namespace boost::accumulators;
 
-typedef accumulator_set<CAmount, stats<tag::weighted_p_square_quantile>, unsigned int> accumulator_t;
+typedef accumulator_set<
+        int64_t,
+        stats<
+            tag::weighted_p_square_quantile
+        >
+        , int64_t
+        > accumulator_t;
 
 BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_block_index(block_index),
                                                                             m_block(block),
@@ -74,7 +80,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
 
     std::map<double, accumulator_t> accumulators;
     for ( double n = 0.01; n < 1 ; n += 0.01 ) {
-        accumulators.insert(std::make_pair(n, accumulator_t(quantile_probability = n)));
+        accumulators.insert(std::make_pair(n, accumulator_t a(quantile_probability = n)));
     }
 
     for (std::size_t transaction_index = 0; transaction_index < m_block.vtx.size(); ++transaction_index) {
@@ -194,11 +200,11 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         oss3 << "{";
         oss3 << it->first;
         oss3 << ", ";
-        oss3 << weighted_p_square_quantile(it.second);
+        oss3 << weighted_p_square_quantile(it->second);
         oss3 << "}";
         double median = 0.5;
         if (std::abs(it->first - median) < 0.001) {
-            block_record.median_fee = weighted_p_square_quantile(it.second);
+            block_record.median_fee = weighted_p_square_quantile(it->second);
         }
     }
     oss3 << "}";
