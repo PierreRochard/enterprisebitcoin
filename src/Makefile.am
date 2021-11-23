@@ -140,6 +140,24 @@ BITCOIN_CORE_H = \
   deploymentstatus.h \
   external_signer.h \
   flatfile.h \
+  enterprise/database.h \
+  enterprise/dotenv.h \
+  enterprise/block_to_sql.h \
+  enterprise/enterprise_notification_interface.h \
+  enterprise/models/addresses.h \
+  enterprise/models/addresses-odb.hxx \
+  enterprise/models/blocks.h \
+  enterprise/models/blocks-odb.hxx \
+  enterprise/models/inputs.h \
+  enterprise/models/inputs-odb.hxx \
+  enterprise/models/outputs.h \
+  enterprise/models/outputs-odb.hxx \
+  enterprise/models/scripts.h \
+  enterprise/models/scripts-odb.hxx \
+  enterprise/models/transactions.h \
+  enterprise/models/transactions-odb.hxx \
+  enterprise/utilities.h \
+  enterprise/version.h \
   fs.h \
   httprpc.h \
   httpserver.h \
@@ -325,6 +343,14 @@ libbitcoin_server_a_SOURCES = \
   dbwrapper.cpp \
   deploymentstatus.cpp \
   flatfile.cpp \
+  enterprise/block_to_sql.cpp \
+  enterprise/enterprise_notification_interface.cpp \
+  enterprise/models/addresses-odb.cxx \
+  enterprise/models/blocks-odb.cxx \
+  enterprise/models/inputs-odb.cxx \
+  enterprise/models/outputs-odb.cxx \
+  enterprise/models/scripts-odb.cxx \
+  enterprise/models/transactions-odb.cxx \
   httprpc.cpp \
   httpserver.cpp \
   i2p.cpp \
@@ -649,7 +675,7 @@ bitcoin_bin_ldadd = \
   $(LIBMEMENV) \
   $(LIBSECP256K1)
 
-bitcoin_bin_ldadd += $(BOOST_LIBS) $(BDB_LIBS) $(MINIUPNPC_LIBS) $(NATPMP_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(ZMQ_LIBS) $(SQLITE_LIBS)
+bitcoin_bin_ldadd += $(BOOST_LIBS) $(BDB_LIBS) $(MINIUPNPC_LIBS) $(NATPMP_LIBS) $(EVENT_PTHREADS_LIBS) $(EVENT_LIBS) $(ZMQ_LIBS) $(SQLITE_LIBS) $(ODB_LIBS) $(ODB_PGSQL_LIBS)
 
 bitcoind_SOURCES = $(bitcoin_daemon_sources) init/bitcoind.cpp
 bitcoind_CPPFLAGS = $(bitcoin_bin_cppflags)
@@ -679,7 +705,7 @@ bitcoin_cli_LDADD = \
   $(LIBBITCOIN_UTIL) \
   $(LIBBITCOIN_CRYPTO)
 
-bitcoin_cli_LDADD += $(BOOST_LIBS) $(EVENT_LIBS)
+bitcoin_cli_LDADD += $(BOOST_LIBS) $(EVENT_LIBS) $(ODB_LIBS) $(ODB_PGSQL_LIBS)
 #
 
 # bitcoin-tx binary #

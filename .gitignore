@@ -151,3 +151,10 @@ dist/
 *.background.tiff
 
 /guix-build-*
+
+/src/enterprise/.env
+/.env
+
+/docker/.env
+/docker/bitcoind/.env
+/docker/tweeter/.env
