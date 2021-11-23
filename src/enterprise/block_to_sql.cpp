@@ -194,10 +194,9 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         oss2 << ";";
         block_record.fee_data += oss2.str();
 
-        for(auto it = accumulators.cbegin(); it != accumulators.cend(); ++it)
+        for(auto it = accumulators.begin(); it != accumulators.end(); ++it)
         {
-            auto acc = (*it).second;
-            acc(transaction_data.GetFee()/transaction_data.vsize, weight=transaction_data.vsize);
+            it->second(transaction_data.GetFee()/transaction_data.vsize, weight=transaction_data.vsize);
         }
 
         acc0(transaction_data.GetFee()/transaction_data.vsize, weight=transaction_data.vsize);
@@ -206,17 +205,16 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
 
     std::ostringstream oss3;
     oss3 << "{";
-    for(auto it = accumulators.cbegin(); it != accumulators.cend(); ++it)
+    for(auto it = accumulators.begin(); it != accumulators.end(); ++it)
     {
-        auto acc = (*it).second;
         oss3 << "{";
         oss3 << it->first;
         oss3 << ", ";
-        oss3 << weighted_p_square_quantile(acc);
+        oss3 << weighted_p_square_quantile(it->second);
         oss3 << "}";
         double median = 0.5;
         if (std::abs(it->first - median) < 0.001) {
-            block_record.median_fee = weighted_p_square_quantile(acc);
+            block_record.median_fee = weighted_p_square_quantile(it->second);
         }
     }
     oss3 << "}";
