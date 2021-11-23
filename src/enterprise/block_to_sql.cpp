@@ -83,10 +83,12 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             m_block_index.nChainWork.GetHex()      // chain_work
     );
 
-    std::map<double, accumulator_t> accumulators;
-    for ( double n = 0.01; n < 1 ; n += 0.01 ) {
-        accumulators.insert(std::make_pair(n, accumulator_t(quantile_probability = n)));
-    }
+//    std::map<double, accumulator_t> accumulators;
+//    for ( double n = 0.01; n < 1 ; n += 0.01 ) {
+//        accumulators.insert(std::make_pair(n, accumulator_t(quantile_probability = n)));
+//    }
+    accumulator_t acc0(quantile_probability = 0.5);
+
 
     for (std::size_t transaction_index = 0; transaction_index < m_block.vtx.size(); ++transaction_index) {
         const CTransactionRef& transaction = m_block.vtx[transaction_index];
@@ -192,29 +194,32 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         oss2 << ";";
         block_record.fee_data += oss2.str();
 
-        for(auto it = accumulators.cbegin(); it != accumulators.cend(); ++it)
-        {
-            (it->second)(transaction_data.GetFee()/transaction_data.vsize, weight=transaction_data.vsize);
-        }
-    }
+//        for(auto it = accumulators.cbegin(); it != accumulators.cend(); ++it)
+//        {
+//            (it->second)(transaction_data.GetFee()/transaction_data.vsize, weight=transaction_data.vsize);
+//        }
 
-    std::ostringstream oss3;
-    oss3 << "{";
-    for(auto it = accumulators.cbegin(); it != accumulators.cend(); ++it)
-    {
-        oss3 << "{";
-        oss3 << it->first;
-        oss3 << ", ";
-        oss3 << weighted_p_square_quantile(it->second);
-        oss3 << "}";
-        double median = 0.5;
-        if (std::abs(it->first - median) < 0.001) {
-            block_record.median_fee = weighted_p_square_quantile(it->second);
-        }
+        acc0(transaction_data.GetFee()/transaction_data.vsize, weight=transaction_data.vsize);
     }
-    oss3 << "}";
+    block_record.median_fee = weighted_p_square_quantile(acc0);
 
-    block_record.fee_distribution = oss3.str();
+//    std::ostringstream oss3;
+//    oss3 << "{";
+//    for(auto it = accumulators.cbegin(); it != accumulators.cend(); ++it)
+//    {
+//        oss3 << "{";
+//        oss3 << it->first;
+//        oss3 << ", ";
+//        oss3 << weighted_p_square_quantile(it->second);
+//        oss3 << "}";
+//        double median = 0.5;
+//        if (std::abs(it->first - median) < 0.001) {
+//            block_record.median_fee = weighted_p_square_quantile(it->second);
+//        }
+//    }
+//    oss3 << "}";
+//
+//    block_record.fee_distribution = oss3.str();
 
     // Insert block into the database
     odb::transaction t(enterprise_database->begin(), false);
