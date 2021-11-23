@@ -62,6 +62,8 @@ namespace odb
     pgsql::text_oid,
     pgsql::text_oid,
     pgsql::text_oid,
+    pgsql::int8_oid,
+    pgsql::text_oid,
     pgsql::text_oid,
     pgsql::int8_oid,
     pgsql::int8_oid,
@@ -96,6 +98,8 @@ namespace odb
     pgsql::float8_oid,
     pgsql::text_oid,
     pgsql::text_oid,
+    pgsql::text_oid,
+    pgsql::int8_oid,
     pgsql::text_oid,
     pgsql::text_oid,
     pgsql::int8_oid,
@@ -248,9 +252,21 @@ namespace odb
       grew = true;
     }
 
-    // output_data
+    // fee_distribution
     //
     if (t[15UL])
+    {
+      i.fee_distribution_value.capacity (i.fee_distribution_size);
+      grew = true;
+    }
+
+    // median_fee
+    //
+    t[16UL] = 0;
+
+    // output_data
+    //
+    if (t[17UL])
     {
       i.output_data_value.capacity (i.output_data_size);
       grew = true;
@@ -258,7 +274,7 @@ namespace odb
 
     // input_data
     //
-    if (t[16UL])
+    if (t[18UL])
     {
       i.input_data_value.capacity (i.input_data_size);
       grew = true;
@@ -266,35 +282,35 @@ namespace odb
 
     // segwit_spend_count
     //
-    t[17UL] = 0;
+    t[19UL] = 0;
 
     // outputs_count
     //
-    t[18UL] = 0;
+    t[20UL] = 0;
 
     // inputs_count
     //
-    t[19UL] = 0;
+    t[21UL] = 0;
 
     // total_output_value
     //
-    t[20UL] = 0;
+    t[22UL] = 0;
 
     // total_fees
     //
-    t[21UL] = 0;
+    t[23UL] = 0;
 
     // total_size
     //
-    t[22UL] = 0;
+    t[24UL] = 0;
 
     // total_vsize
     //
-    t[23UL] = 0;
+    t[25UL] = 0;
 
     // total_weight
     //
-    t[24UL] = 0;
+    t[26UL] = 0;
 
     return grew;
   }
@@ -424,6 +440,22 @@ namespace odb
     b[n].capacity = i.fee_data_value.capacity ();
     b[n].size = &i.fee_data_size;
     b[n].is_null = &i.fee_data_null;
+    n++;
+
+    // fee_distribution
+    //
+    b[n].type = pgsql::bind::text;
+    b[n].buffer = i.fee_distribution_value.data ();
+    b[n].capacity = i.fee_distribution_value.capacity ();
+    b[n].size = &i.fee_distribution_size;
+    b[n].is_null = &i.fee_distribution_null;
+    n++;
+
+    // median_fee
+    //
+    b[n].type = pgsql::bind::bigint;
+    b[n].buffer = &i.median_fee_value;
+    b[n].is_null = &i.median_fee_null;
     n++;
 
     // output_data
@@ -745,6 +777,41 @@ namespace odb
       i.fee_data_null = is_null;
       i.fee_data_size = size;
       grew = grew || (cap != i.fee_data_value.capacity ());
+    }
+
+    // fee_distribution
+    //
+    {
+      ::std::string const& v =
+        o.fee_distribution;
+
+      bool is_null (false);
+      std::size_t size (0);
+      std::size_t cap (i.fee_distribution_value.capacity ());
+      pgsql::value_traits<
+          ::std::string,
+          pgsql::id_string >::set_image (
+        i.fee_distribution_value,
+        size,
+        is_null,
+        v);
+      i.fee_distribution_null = is_null;
+      i.fee_distribution_size = size;
+      grew = grew || (cap != i.fee_distribution_value.capacity ());
+    }
+
+    // median_fee
+    //
+    {
+      ::int64_t const& v =
+        o.median_fee;
+
+      bool is_null (false);
+      pgsql::value_traits<
+          ::int64_t,
+          pgsql::id_bigint >::set_image (
+        i.median_fee_value, is_null, v);
+      i.median_fee_null = is_null;
     }
 
     // output_data
@@ -1127,6 +1194,35 @@ namespace odb
         i.fee_data_null);
     }
 
+    // fee_distribution
+    //
+    {
+      ::std::string& v =
+        o.fee_distribution;
+
+      pgsql::value_traits<
+          ::std::string,
+          pgsql::id_string >::set_value (
+        v,
+        i.fee_distribution_value,
+        i.fee_distribution_size,
+        i.fee_distribution_null);
+    }
+
+    // median_fee
+    //
+    {
+      ::int64_t& v =
+        o.median_fee;
+
+      pgsql::value_traits<
+          ::int64_t,
+          pgsql::id_bigint >::set_value (
+        v,
+        i.median_fee_value,
+        i.median_fee_null);
+    }
+
     // output_data
     //
     {
@@ -1300,6 +1396,8 @@ namespace odb
   "\"difficulty\", "
   "\"chain_work\", "
   "\"fee_data\", "
+  "\"fee_distribution\", "
+  "\"median_fee\", "
   "\"output_data\", "
   "\"input_data\", "
   "\"segwit_spend_count\", "
@@ -1311,7 +1409,7 @@ namespace odb
   "\"total_vsize\", "
   "\"total_weight\") "
   "VALUES "
-  "(DEFAULT, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) "
+  "(DEFAULT, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26) "
   "RETURNING \"id\"";
 
   const char access::object_traits_impl< ::eBlocks, id_pgsql >::find_statement[] =
@@ -1331,6 +1429,8 @@ namespace odb
   "\"bitcoin\".\"eBlocks\".\"difficulty\", "
   "\"bitcoin\".\"eBlocks\".\"chain_work\", "
   "\"bitcoin\".\"eBlocks\".\"fee_data\", "
+  "\"bitcoin\".\"eBlocks\".\"fee_distribution\", "
+  "\"bitcoin\".\"eBlocks\".\"median_fee\", "
   "\"bitcoin\".\"eBlocks\".\"output_data\", "
   "\"bitcoin\".\"eBlocks\".\"input_data\", "
   "\"bitcoin\".\"eBlocks\".\"segwit_spend_count\", "
@@ -1361,17 +1461,19 @@ namespace odb
   "\"difficulty\"=$12, "
   "\"chain_work\"=$13, "
   "\"fee_data\"=$14, "
-  "\"output_data\"=$15, "
-  "\"input_data\"=$16, "
-  "\"segwit_spend_count\"=$17, "
-  "\"outputs_count\"=$18, "
-  "\"inputs_count\"=$19, "
-  "\"total_output_value\"=$20, "
-  "\"total_fees\"=$21, "
-  "\"total_size\"=$22, "
-  "\"total_vsize\"=$23, "
-  "\"total_weight\"=$24 "
-  "WHERE \"id\"=$25";
+  "\"fee_distribution\"=$15, "
+  "\"median_fee\"=$16, "
+  "\"output_data\"=$17, "
+  "\"input_data\"=$18, "
+  "\"segwit_spend_count\"=$19, "
+  "\"outputs_count\"=$20, "
+  "\"inputs_count\"=$21, "
+  "\"total_output_value\"=$22, "
+  "\"total_fees\"=$23, "
+  "\"total_size\"=$24, "
+  "\"total_vsize\"=$25, "
+  "\"total_weight\"=$26 "
+  "WHERE \"id\"=$27";
 
   const char access::object_traits_impl< ::eBlocks, id_pgsql >::erase_statement[] =
   "DELETE FROM \"bitcoin\".\"eBlocks\" "
@@ -1394,6 +1496,8 @@ namespace odb
   "\"bitcoin\".\"eBlocks\".\"difficulty\", "
   "\"bitcoin\".\"eBlocks\".\"chain_work\", "
   "\"bitcoin\".\"eBlocks\".\"fee_data\", "
+  "\"bitcoin\".\"eBlocks\".\"fee_distribution\", "
+  "\"bitcoin\".\"eBlocks\".\"median_fee\", "
   "\"bitcoin\".\"eBlocks\".\"output_data\", "
   "\"bitcoin\".\"eBlocks\".\"input_data\", "
   "\"bitcoin\".\"eBlocks\".\"segwit_spend_count\", "

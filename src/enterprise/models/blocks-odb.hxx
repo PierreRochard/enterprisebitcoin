@@ -17,6 +17,7 @@
 
 #include <memory>
 #include <cstddef>
+#include <utility>
 
 #include <odb/core.hxx>
 #include <odb/traits.hxx>
@@ -271,6 +272,30 @@ namespace odb
 
     static const fee_data_type_ fee_data;
 
+    // fee_distribution
+    //
+    typedef
+    pgsql::query_column<
+      pgsql::value_traits<
+        ::std::string,
+        pgsql::id_string >::query_type,
+      pgsql::id_string >
+    fee_distribution_type_;
+
+    static const fee_distribution_type_ fee_distribution;
+
+    // median_fee
+    //
+    typedef
+    pgsql::query_column<
+      pgsql::value_traits<
+        ::int64_t,
+        pgsql::id_bigint >::query_type,
+      pgsql::id_bigint >
+    median_fee_type_;
+
+    static const median_fee_type_ median_fee;
+
     // output_data
     //
     typedef
@@ -468,6 +493,16 @@ namespace odb
   fee_data (A::table_name, "\"fee_data\"", 0);
 
   template <typename A>
+  const typename query_columns< ::eBlocks, id_pgsql, A >::fee_distribution_type_
+  query_columns< ::eBlocks, id_pgsql, A >::
+  fee_distribution (A::table_name, "\"fee_distribution\"", 0);
+
+  template <typename A>
+  const typename query_columns< ::eBlocks, id_pgsql, A >::median_fee_type_
+  query_columns< ::eBlocks, id_pgsql, A >::
+  median_fee (A::table_name, "\"median_fee\"", 0);
+
+  template <typename A>
   const typename query_columns< ::eBlocks, id_pgsql, A >::output_data_type_
   query_columns< ::eBlocks, id_pgsql, A >::
   output_data (A::table_name, "\"output_data\"", 0);
@@ -617,6 +652,17 @@ namespace odb
       std::size_t fee_data_size;
       bool fee_data_null;
 
+      // fee_distribution
+      //
+      details::buffer fee_distribution_value;
+      std::size_t fee_distribution_size;
+      bool fee_distribution_null;
+
+      // median_fee
+      //
+      long long median_fee_value;
+      bool median_fee_null;
+
       // output_data
       //
       details::buffer output_data_value;
@@ -711,7 +757,7 @@ namespace odb
 
     typedef pgsql::query_base query_base_type;
 
-    static const std::size_t column_count = 25UL;
+    static const std::size_t column_count = 27UL;
     static const std::size_t id_column_count = 1UL;
     static const std::size_t inverse_column_count = 0UL;
     static const std::size_t readonly_column_count = 0UL;
