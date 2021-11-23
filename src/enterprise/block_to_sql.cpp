@@ -107,16 +107,16 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             txnouttype which_type = Solver(txout_data.scriptPubKey, solutions_data);
             const char* script_type = GetTxnOutputType(which_type);
 
-            std::ostringstream oss;
-            oss << "";
-            oss << output_size << "," ;
-            oss << txout_data.nValue << ",";
-            oss << transaction_data.GetFeeRate() << ",";
-            oss << CScriptID(txout_data.scriptPubKey).GetHex() << ",";
-            oss << ScriptToAsmStr(txout_data.scriptPubKey) << ",";
-            oss << script_type;
-            oss << ";";
-            block_record.output_data += oss.str();
+//            std::ostringstream oss;
+//            oss << "";
+//            oss << output_size << "," ;
+//            oss << txout_data.nValue << ",";
+//            oss << transaction_data.GetFeeRate() << ",";
+//            oss << CScriptID(txout_data.scriptPubKey).GetHex() << ",";
+//            oss << ScriptToAsmStr(txout_data.scriptPubKey) << ",";
+//            oss << script_type;
+//            oss << ";";
+//            block_record.output_data += oss.str();
 
         }
 
@@ -158,23 +158,23 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             txnouttype which_type = Solver(spent_output_data.scriptPubKey, solutions_data);
             const char* spent_script_type = GetTxnOutputType(which_type);
 
-            std::ostringstream oss;
-            oss << "";
-            oss << spent_output_size << "," ;
-            oss << spent_output_data.nValue << ",";
-            oss << CScriptID(spent_output_data.scriptPubKey).GetHex() << ",";
-            oss << spent_script_type << ",";
-            oss << ScriptToAsmStr(spent_output_data.scriptPubKey) << ",";
-            oss << GetTransactionInputWeight(txin_data) << "," ;
-            oss << CScriptID(txin_data.scriptSig).GetHex() << ",";
-            oss << ScriptToAsmStr(txin_data.scriptSig, true) << ",";
-            if (!txin_data.scriptWitness.IsNull()) {
-                for (const auto& item : txin_data.scriptWitness.stack) {
-                    oss << HexStr(item.begin(), item.end()) << "*";
-                }
-            }
-            oss << ";";
-            block_record.input_data += oss.str();
+//            std::ostringstream oss;
+//            oss << "";
+//            oss << spent_output_size << "," ;
+//            oss << spent_output_data.nValue << ",";
+//            oss << CScriptID(spent_output_data.scriptPubKey).GetHex() << ",";
+//            oss << spent_script_type << ",";
+//            oss << ScriptToAsmStr(spent_output_data.scriptPubKey) << ",";
+//            oss << GetTransactionInputWeight(txin_data) << "," ;
+//            oss << CScriptID(txin_data.scriptSig).GetHex() << ",";
+//            oss << ScriptToAsmStr(txin_data.scriptSig, true) << ",";
+//            if (!txin_data.scriptWitness.IsNull()) {
+//                for (const auto& item : txin_data.scriptWitness.stack) {
+//                    oss << HexStr(item.begin(), item.end()) << "*";
+//                }
+//            }
+//            oss << ";";
+//            block_record.input_data += oss.str();
         }
 
         block_record.segwit_spend_count += transaction_data.is_segwit_out_spend;
