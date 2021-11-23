@@ -216,6 +216,10 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         if (std::abs(it->first - median) < 0.001) {
             block_record.median_fee = weighted_p_square_quantile(it->second);
         }
+        if (it != accumulators.end())
+        {
+            oss3 << ",";
+        }
     }
     oss3 << "}";
 
