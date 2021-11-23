@@ -196,7 +196,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
 
         for(auto it = accumulators.cbegin(); it != accumulators.cend(); ++it)
         {
-            (*it->second).operator(transaction_data.GetFee()/transaction_data.vsize, weight=transaction_data.vsize);
+            (*it->second)(transaction_data.GetFee()/transaction_data.vsize, weight=transaction_data.vsize);
         }
 
         acc0(transaction_data.GetFee()/transaction_data.vsize, weight=transaction_data.vsize);
