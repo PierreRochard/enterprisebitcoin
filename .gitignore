@@ -124,3 +124,11 @@ db4/
 
 # clang-check
 *.plist
+
+
+/src/enterprise/.env
+/.env
+
+/docker/.env
+/docker/bitcoind/.env
+/docker/tweeter/.env
