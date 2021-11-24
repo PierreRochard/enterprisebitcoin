@@ -32,23 +32,6 @@
 #include <odb/result.hxx>
 #include <odb/transaction.hxx>
 
-#include <boost/accumulators/accumulators.hpp>
-#include <boost/accumulators/statistics/count.hpp>
-#include <boost/accumulators/statistics/sum.hpp>
-#include <boost/accumulators/statistics/sum_kahan.hpp>
-#include <boost/accumulators/statistics/stats.hpp>
-#include <boost/accumulators/statistics/moment.hpp>
-#include <boost/accumulators/statistics/weighted_p_square_quantile.hpp>
-
-using namespace boost::accumulators;
-
-typedef accumulator_set<
-        int64_t,
-        stats<
-            tag::weighted_p_square_quantile
-        >
-        , int64_t
-        > accumulator_t;
 
 BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_block_index(block_index),
                                                                             m_block(block),
@@ -82,12 +65,6 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             GetDifficulty(&m_block_index),         // difficulty
             m_block_index.nChainWork.GetHex()      // chain_work
     );
-
-    std::map<double, accumulator_t> accumulators;
-    for ( double n = 0.01; n < 1 ; n += 0.01 ) {
-        accumulators.insert(std::make_pair(n, accumulator_t(quantile_probability = n)));
-    }
-    accumulator_t acc0(quantile_probability = 0.5);
 
     std::map<CAmount, unsigned int> fee_rates;
 
