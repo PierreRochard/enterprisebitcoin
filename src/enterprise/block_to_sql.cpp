@@ -89,6 +89,8 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
     }
     accumulator_t acc0(quantile_probability = 0.5);
 
+    std::map<CAmount, unsigned int> fee_rates;
+
 
     for (std::size_t transaction_index = 0; transaction_index < m_block.vtx.size(); ++transaction_index) {
         const CTransactionRef& transaction = m_block.vtx[transaction_index];
@@ -200,22 +202,21 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         }
 
         acc0(transaction_data.GetFee()/transaction_data.vsize, weight=transaction_data.vsize);
+
+        CAmount fee_rate = transaction_data.GetFee()/transaction_data.vsize;
+        fee_rates[fee_rate] += transaction_data.weight;
     }
     block_record.median_fee = weighted_p_square_quantile(acc0);
 
     std::ostringstream oss3;
     oss3 << "{";
-    for(auto it = accumulators.begin(); it != accumulators.end(); ++it)
+    for(auto it = fee_rates.begin(); it != fee_rates.end(); ++it)
     {
         oss3 << "{";
         oss3 << it->first;
-        oss3 << ", ";
-        oss3 << weighted_p_square_quantile(it->second);
+        oss3 << ",";
+        oss3 << it->second;
         oss3 << "}";
-        double median = 0.5;
-        if (std::abs(it->first - median) < 0.001) {
-            block_record.median_fee = weighted_p_square_quantile(it->second);
-        }
         if (it != accumulators.end())
         {
             oss3 << ",";
