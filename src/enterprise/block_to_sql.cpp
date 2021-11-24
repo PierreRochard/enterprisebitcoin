@@ -176,7 +176,6 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         CAmount fee_rate = transaction_data.GetFee()/transaction_data.vsize;
         fee_rates[fee_rate] += transaction_data.weight;
     }
-    block_record.median_fee = weighted_p_square_quantile(acc0);
 
     std::ostringstream oss3;
     oss3 << "{";
