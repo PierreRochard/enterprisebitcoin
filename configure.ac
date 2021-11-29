@@ -1506,6 +1506,10 @@ if test "x$use_qr" != xno; then
   BITCOIN_QT_CHECK([PKG_CHECK_MODULES([QR], [libqrencode], [have_qrencode=yes], [have_qrencode=no])])
 fi
 
+dnl PostgreSQL check
+
+PKG_CHECK_MODULES([PQXX], [libpqxx])
+
 dnl ZMQ check
 
 if test "x$use_zmq" = xyes; then

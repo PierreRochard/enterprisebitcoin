@@ -93,6 +93,9 @@
 #include <zmq/zmqrpc.h>
 #endif
 
+#include <enterprise/enterprise_notification_interface.h>
+static EnterpriseNotificationInterface* enterpriseNotificationInterface = nullptr;
+
 static const bool DEFAULT_PROXYRANDOMIZE = true;
 static const bool DEFAULT_REST_ENABLE = false;
 
@@ -1373,6 +1376,9 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
         RegisterValidationInterface(g_zmq_notification_interface);
     }
 #endif
+
+    enterpriseNotificationInterface = new EnterpriseNotificationInterface();
+    RegisterValidationInterface(enterpriseNotificationInterface);
 
     // ********************************************************* Step 7: load block chain
 
