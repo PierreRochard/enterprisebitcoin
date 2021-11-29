@@ -16,6 +16,32 @@
 #include <assert.h>
 #include <string.h>
 
+unsigned int GetTxnOutputTypeEnum(TxoutType t) {
+    switch (t) {
+        case TxoutType::NONSTANDARD:
+            return 1;
+        case TxoutType::PUBKEY:
+            return 2;
+        case TxoutType::PUBKEYHASH:
+            return 3;
+        case TxoutType::SCRIPTHASH:
+            return 4;
+        case TxoutType::MULTISIG:
+            return 5;
+        case TxoutType::NULL_DATA:
+            return 6;
+        case TxoutType::WITNESS_V0_KEYHASH:
+            return 7;
+        case TxoutType::WITNESS_V0_SCRIPTHASH:
+            return 8;
+        case TxoutType::WITNESS_V1_TAPROOT:
+            return 9;
+        case TxoutType::WITNESS_UNKNOWN:
+            return 10;
+    } // no default case, so the compiler can warn about missing cases
+    assert(false);
+}
+
 struct EnterpriseDestination {
     std::string address;
     std::string source_type;
@@ -85,7 +111,7 @@ public:
         destination.source_type = "WitnessUnknown";
         destination.version = id.version;
         destination.length = id.length;
-        std::string str_program(reinterpret_cast<char*>(const_cast<unsigned char*>(id.program)));
+        std::string str_program(reinterpret_cast<char *>(const_cast<unsigned char *>(id.program)));
         destination.program = str_program;
 
         if (id.version < 1 || id.version > 16 || id.length < 2 || id.length > 40) {

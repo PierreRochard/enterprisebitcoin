@@ -20,11 +20,7 @@ CREATE TABLE bitcoin.blocks
     nonce              BIGINT,
     difficulty         DOUBLE PRECISION,
     chain_work         TEXT,
-    fee_data           TEXT,
-    fee_distribution   TEXT,
-    median_fee         BIGINT,
-    output_data        TEXT,
-    input_data         TEXT,
+
     segwit_spend_count BIGINT,
     outputs_count      BIGINT,
     inputs_count       BIGINT,
@@ -32,5 +28,10 @@ CREATE TABLE bitcoin.blocks
     total_fees         BIGINT,
     total_size         BIGINT,
     total_vsize        BIGINT,
-    total_weight       BIGINT
+    total_weight       BIGINT,
+
+    fee_rates          INT[],
+    output_data        INT[],
+    input_data         INT[],
+    transaction_data   INT[]
 );
