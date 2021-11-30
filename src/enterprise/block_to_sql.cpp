@@ -81,7 +81,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             output_data_string_stream << transaction_data.GetFeeRate() << ",";
             output_data_string_stream << script_type;
             output_data_string_stream << "}";
-            if (transaction_index != m_block.vtx.size() || output_vector != transaction->vout.size()) {
+            if (transaction_index != m_block.vtx.size()-1 || output_vector != transaction->vout.size()-1) {
                 output_data_string_stream << ",";
             }
         }
@@ -96,7 +96,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
 
             uint256 hash_block;
             CTransactionRef spent_output_transaction = GetTransaction(
-                    &block_index,
+                    nullptr,
                     nullptr,
                     txin_data.prevout.hash,
                     Params().GetConsensus(),
@@ -113,14 +113,8 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
                 }
             }
             if (hash_block.IsNull()) {
-                bool f_txindex_ready = false;
-//                if (g_txindex) {
-//                    f_txindex_ready = g_txindex->BlockUntilSyncedToCurrentChain();
-//                }
                 if (!g_txindex) {
-                    LogPrintf("No such mempool transaction. Use -txindex or provide a block hash to enable blockchain transaction queries\n");
-                } else if (!f_txindex_ready) {
-                    LogPrintf("Blockchain transactions are still in the process of being indexed\n");
+                    LogPrintf("Use -txindex\n");
                 } else {
                     LogPrintf("No such blockchain transaction\n");
                 }
@@ -144,7 +138,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             input_data_string_stream << spent_output_data.nValue << ",";
             input_data_string_stream << spent_script_type;
             input_data_string_stream << "}";
-            if (transaction_index != m_block.vtx.size() || input_vector != transaction->vin.size()) {
+            if (transaction_index != m_block.vtx.size()-1 || input_vector != transaction->vin.size()-1) {
                 input_data_string_stream << ",";
             }
         }
@@ -164,7 +158,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         transaction_data_string_stream << transaction_data.weight << ",";
         transaction_data_string_stream << transaction_data.GetFee();
         transaction_data_string_stream << "}";
-        if (transaction_index != m_block.vtx.size()) {
+        if (transaction_index != m_block.vtx.size()-1) {
             transaction_data_string_stream << ",";
         }
 
@@ -180,9 +174,8 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         fee_rates_string_stream << ",";
         fee_rates_string_stream << it->second;
         fee_rates_string_stream << "}";
-        if (it != fee_rates.end()) {
-            fee_rates_string_stream << ",";
-        }
+        if ((it != fee_rates.end()) && (next(it) == fee_rates.end())) continue;
+        fee_rates_string_stream << ",";
     }
 
     fee_rates_string_stream << "}";
@@ -195,27 +188,35 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
                              "hash, "
                              "merkle_root, "
                              "time, "
+
                              "median_time, "
                              "height, "
                              "subsidy, "
+
                              "transactions_count, "
                              "version, "
                              "status, "
+
                              "bits, "
                              "nonce, "
                              "difficulty, "
+
                              "chain_work, "
                              "segwit_spend_count, "
                              "outputs_count, "
+
                              "inputs_count, "
                              "total_output_value, "
                              "total_fees, "
+
                              "total_size, "
                              "total_vsize, "
                              "total_weight, "
+
                              "fee_rates, "
                              "output_data, "
                              "input_data, "
+
                              "transaction_data"
                              ") "
                              "VALUES "
@@ -243,7 +244,8 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
                              "$21, "
                              "$22, "
                              "$23, "
-                             "$24 "
+                             "$24, "
+                             "$25"
                              ");");
 
     auto r2{w.exec_prepared(
@@ -251,27 +253,35 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             m_block_header_hash,                   // hash
             m_block_index.hashMerkleRoot.GetHex(), // merkle_root
             m_block_index.GetBlockTime(),          // time
+
             m_block_index.GetMedianTimePast(),     // median_time
             m_block_index.nHeight,                 // height
             GetBlockSubsidy(m_block_index.nHeight, Params().GetConsensus()), // subsidy
+
             m_block_index.nTx,                     // transactions_count
             m_block_index.nVersion,                // version
             m_block_index.nStatus,                 // status
+
             m_block_index.nBits,                   // bits
             m_block_index.nNonce,                  // nonce
             GetDifficulty(&m_block_index),         // difficulty
+
             m_block_index.nChainWork.GetHex(),      // chain_work
             segwit_spend_count,
             outputs_count,
+
             inputs_count,
             total_output_value,
             total_fees,
+
             total_size,
             total_vsize,
             total_weight,
+
             fee_rates_string_stream.str(),
             output_data_string_stream.str(),
             input_data_string_stream.str(),
+
             transaction_data_string_stream.str()
     )};
     w.commit();

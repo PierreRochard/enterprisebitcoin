@@ -13,10 +13,10 @@ CREATE TABLE bitcoin.blocks
     median_time        BIGINT,
     height             BIGINT,
     subsidy            BIGINT,
-    transactions_count INTEGER,
-    version            INTEGER,
-    status             INTEGER,
-    bits               INTEGER,
+    transactions_count BIGINT,
+    version            BIGINT,
+    status             BIGINT,
+    bits               BIGINT,
     nonce              BIGINT,
     difficulty         DOUBLE PRECISION,
     chain_work         TEXT,
@@ -30,8 +30,8 @@ CREATE TABLE bitcoin.blocks
     total_vsize        BIGINT,
     total_weight       BIGINT,
 
-    fee_rates          INT[],
-    output_data        INT[],
-    input_data         INT[],
-    transaction_data   INT[]
+    fee_rates          BIGINT[],
+    output_data        BIGINT[],
+    input_data         BIGINT[],
+    transaction_data   BIGINT[]
 );
