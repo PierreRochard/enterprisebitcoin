@@ -3,11 +3,12 @@ SELECT
        count(height) as heights,
        sum(total_fees) as total_fees,
        sum(total_weight) as total_weight,
-       fee_rate,
+       percentile_cont(Array[0.1, 0.5, 0.9]) within group (order by fee_rate)::int[],
        sum(fee_rate_weight) as fee_rate_weight
 
 FROM (
          SELECT height,
+                outputs_count,
                 median_time::date as daydate,
                 total_fees,
                 total_weight,
@@ -19,5 +20,5 @@ FROM (
          ORDER BY median_time DESC
      ) as b
 WHERE fee_rate > 0
-GROUP BY daydate, fee_rate
+GROUP BY daydate
 LIMIT 10;
