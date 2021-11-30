@@ -6,8 +6,7 @@ DROP TABLE IF EXISTS bitcoin.blocks CASCADE;
 
 CREATE TABLE bitcoin.blocks
 (
-    id                 SERIAL PRIMARY KEY,
-    hash               TEXT,
+    hash               TEXT PRIMARY KEY,
     merkle_root        TEXT,
     time               BIGINT,
     median_time        BIGINT,

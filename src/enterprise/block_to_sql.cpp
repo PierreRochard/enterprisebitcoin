@@ -32,11 +32,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
                << dotenv["PGPASSWORD"] << " hostaddr = " << dotenv["PGHOST"] << " port = " << dotenv["PGPORT"];
     pqxx::connection c(connStream.str());
 
-    c.prepare("CheckBlock", "SELECT hash from bitcoin.blocks WHERE hash = $1 LIMIT 1;");
     pqxx::work w(c);
-    auto r1{w.exec_prepared("CheckBlock", m_block_header_hash)};
-    w.commit();
-    if (std::size(r1) == 1) return;
 
     std::map<CAmount, unsigned int> fee_rates;
 
