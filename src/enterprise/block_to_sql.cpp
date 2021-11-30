@@ -50,13 +50,13 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
     unsigned int total_weight = 0;
 
     std::ostringstream output_data_string_stream;
-    output_data_string_stream << "{";
+    output_data_string_stream << "[";
 
     std::ostringstream input_data_string_stream;
-    input_data_string_stream << "{";
+    input_data_string_stream << "[";
 
     std::ostringstream transaction_data_string_stream;
-    transaction_data_string_stream << "{";
+    transaction_data_string_stream << "[";
 
     for (std::size_t transaction_index = 0; transaction_index < m_block.vtx.size(); ++transaction_index) {
         const CTransactionRef &transaction = m_block.vtx[transaction_index];
@@ -78,12 +78,12 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             output_script_types[script_type][1] += output_size;
             output_script_types[script_type][2] += txout_data.nValue;
 
-            output_data_string_stream << "{";
+            output_data_string_stream << "[";
             output_data_string_stream << output_size << ",";
             output_data_string_stream << txout_data.nValue << ",";
             output_data_string_stream << transaction_data.GetFeeRate() << ",";
             output_data_string_stream << script_type;
-            output_data_string_stream << "}";
+            output_data_string_stream << "]";
             if (transaction_index != m_block.vtx.size()-1 || output_vector != transaction->vout.size()-1) {
                 output_data_string_stream << ",";
             }
@@ -143,13 +143,13 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             input_script_types[spent_script_type][3] += spent_output_size;
             input_script_types[spent_script_type][4] += spent_output_data.nValue;
 
-            input_data_string_stream << "{";
+            input_data_string_stream << "[";
             input_data_string_stream << GetTransactionInputWeight(txin_data) << ",";
             input_data_string_stream << input_size << ",";
             input_data_string_stream << spent_output_size << ",";
             input_data_string_stream << spent_output_data.nValue << ",";
             input_data_string_stream << spent_script_type;
-            input_data_string_stream << "}";
+            input_data_string_stream << "]";
             if (transaction_index != m_block.vtx.size()-1 || input_vector != transaction->vin.size()-1) {
                 input_data_string_stream << ",";
             }
@@ -165,12 +165,12 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         total_vsize += transaction_data.vsize;
         total_weight += transaction_data.weight;
 
-        transaction_data_string_stream << "{";
+        transaction_data_string_stream << "[";
         transaction_data_string_stream << transaction_data.m_transaction->GetTotalSize() << ",";
         transaction_data_string_stream << transaction_data.vsize << ",";
         transaction_data_string_stream << transaction_data.weight << ",";
         transaction_data_string_stream << transaction_data.GetFee();
-        transaction_data_string_stream << "}";
+        transaction_data_string_stream << "]";
         if (transaction_index != m_block.vtx.size()-1) {
             transaction_data_string_stream << ",";
         }
@@ -180,21 +180,21 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
     }
 
     std::ostringstream fee_rates_string_stream;
-    fee_rates_string_stream << "{";
+    fee_rates_string_stream << "[";
     for (auto it = fee_rates.begin(); it != fee_rates.end(); ++it) {
-        fee_rates_string_stream << "{";
+        fee_rates_string_stream << "[";
         fee_rates_string_stream << it->first;
         fee_rates_string_stream << ",";
         fee_rates_string_stream << it->second;
-        fee_rates_string_stream << "}";
+        fee_rates_string_stream << "]";
         if ((it != fee_rates.end()) && (next(it) == fee_rates.end())) continue;
         fee_rates_string_stream << ",";
     }
 
     std::ostringstream output_script_types_string_stream;
-    output_script_types_string_stream << "{";
+    output_script_types_string_stream << "[";
     for (auto it = output_script_types.begin(); it != output_script_types.end(); ++it) {
-        output_script_types_string_stream << "{";
+        output_script_types_string_stream << "[";
         output_script_types_string_stream << it->first;
         output_script_types_string_stream << ",";
         auto arr = it->second;
@@ -203,15 +203,15 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             if ((it2 != std::end(arr)) && (std::next(it2) == std::end(arr))) continue;
             output_script_types_string_stream << ",";
         }
-        output_script_types_string_stream << "}";
+        output_script_types_string_stream << "]";
         if ((it != output_script_types.end()) && (next(it) == output_script_types.end())) continue;
         output_script_types_string_stream << ",";
     }
 
     std::ostringstream input_script_types_string_stream;
-    input_script_types_string_stream << "{";
+    input_script_types_string_stream << "[";
     for (auto it = input_script_types.begin(); it != input_script_types.end(); ++it) {
-        input_script_types_string_stream << "{";
+        input_script_types_string_stream << "[";
         input_script_types_string_stream << it->first;
         input_script_types_string_stream << ",";
         auto arr = it->second;
@@ -220,17 +220,17 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             if ((it2 != std::end(arr)) && (std::next(it2) == std::end(arr))) continue;
             input_script_types_string_stream << ",";
         }
-        input_script_types_string_stream << "}";
+        input_script_types_string_stream << "]";
         if ((it != input_script_types.end()) && (next(it) == input_script_types.end())) continue;
         input_script_types_string_stream << ",";
     }
 
-    fee_rates_string_stream << "}";
-    output_data_string_stream << "}";
-    input_data_string_stream << "}";
-    transaction_data_string_stream << "}";
-    input_script_types_string_stream << "}";
-    output_script_types_string_stream << "}";
+    fee_rates_string_stream << "]";
+    output_data_string_stream << "]";
+    input_data_string_stream << "]";
+    transaction_data_string_stream << "]";
+    input_script_types_string_stream << "]";
+    output_script_types_string_stream << "]";
 
     c.prepare("InsertBlock", "INSERT INTO bitcoin.blocks "
                              "("

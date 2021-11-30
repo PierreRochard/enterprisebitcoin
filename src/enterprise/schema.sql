@@ -35,11 +35,11 @@ CREATE TABLE bitcoin.blocks
     total_vsize         BIGINT,
     total_weight        BIGINT,
 
-    fee_rates           BIGINT[],
-    output_data         BIGINT[],
-    input_data          BIGINT[],
+    fee_rates           JSONB,
+    output_data         JSONB,
+    input_data          JSONB,
 
-    transaction_data    BIGINT[],
-    output_script_types BIGINT[],
-    input_script_types  BIGINT[]
+    transaction_data    JSONB,
+    output_script_types JSONB,
+    input_script_types  JSONB
 );
