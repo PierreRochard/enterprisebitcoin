@@ -3,7 +3,7 @@ SELECT
        count(height) as heights,
        sum(total_fees) as total_fees,
        sum(total_weight) as total_weight,
-       percentile_cont(Array[0.1, 0.5, 0.9]) within group (order by fee_rate)::int[],
+       percentile_cont((select array_agg(s) from generate_series(0, 1, 0.1) as s)) within group (order by fee_rate)::int[],
        sum(fee_rate_weight) as fee_rate_weight
 
 FROM (
