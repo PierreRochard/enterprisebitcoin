@@ -36,8 +36,8 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
 
     std::map<CAmount, unsigned int> fee_rates;
 
-    std::map<unsigned int, std::array<unsigned int, 3>> output_script_types;
-    std::map<unsigned int, std::array<unsigned int, 5>> input_script_types;
+    std::map<unsigned int, std::array<CAmount, 3>> output_script_types;
+    std::map<unsigned int, std::array<CAmount, 5>> input_script_types;
 
     unsigned int segwit_spend_count = 0;
     unsigned int outputs_count = 0;
