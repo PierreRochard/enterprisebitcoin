@@ -6,31 +6,39 @@ DROP TABLE IF EXISTS bitcoin.blocks CASCADE;
 
 CREATE TABLE bitcoin.blocks
 (
-    hash               TEXT PRIMARY KEY,
-    merkle_root        TEXT,
-    time               timestamp with time zone,
-    median_time        timestamp with time zone,
-    height             BIGINT,
-    subsidy            BIGINT,
-    transactions_count BIGINT,
-    version            BIGINT,
-    status             BIGINT,
-    bits               BIGINT,
-    nonce              BIGINT,
-    difficulty         DOUBLE PRECISION,
-    chain_work         TEXT,
+    hash                TEXT PRIMARY KEY,
+    merkle_root         TEXT,
+    time                timestamp with time zone,
 
-    segwit_spend_count BIGINT,
-    outputs_count      BIGINT,
-    inputs_count       BIGINT,
-    total_output_value BIGINT,
-    total_fees         BIGINT,
-    total_size         BIGINT,
-    total_vsize        BIGINT,
-    total_weight       BIGINT,
+    median_time         timestamp with time zone,
+    height              BIGINT,
+    subsidy             BIGINT,
 
-    fee_rates          BIGINT[],
-    output_data        BIGINT[],
-    input_data         BIGINT[],
-    transaction_data   BIGINT[]
+    transactions_count  BIGINT,
+    version             BIGINT,
+    status              BIGINT,
+
+    bits                BIGINT,
+    nonce               BIGINT,
+    difficulty          DOUBLE PRECISION,
+
+    chain_work          TEXT,
+    segwit_spend_count  BIGINT,
+    outputs_count       BIGINT,
+
+    inputs_count        BIGINT,
+    total_output_value  BIGINT,
+    total_fees          BIGINT,
+
+    total_size          BIGINT,
+    total_vsize         BIGINT,
+    total_weight        BIGINT,
+
+    fee_rates           BIGINT[],
+    output_data         BIGINT[],
+    input_data          BIGINT[],
+
+    transaction_data    BIGINT[],
+    output_script_types BIGINT[],
+    input_script_types  BIGINT[]
 );

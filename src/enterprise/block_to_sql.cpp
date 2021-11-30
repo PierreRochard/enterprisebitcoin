@@ -36,6 +36,9 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
 
     std::map<CAmount, unsigned int> fee_rates;
 
+    std::map<unsigned int, std::array<unsigned int, 3>> output_script_types;
+    std::map<unsigned int, std::array<unsigned int, 5>> input_script_types;
+
     unsigned int segwit_spend_count = 0;
     unsigned int outputs_count = 0;
     unsigned int inputs_count = 0;
@@ -70,6 +73,9 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             std::vector <std::vector<unsigned char>> solutions_data;
             TxoutType which_type = Solver(txout_data.scriptPubKey, solutions_data);
             const unsigned int script_type = GetTxnOutputTypeEnum(which_type);
+            output_script_types[script_type][0] += 1;
+            output_script_types[script_type][1] += output_size;
+            output_script_types[script_type][2] += txout_data.nValue;
 
             output_data_string_stream << "{";
             output_data_string_stream << output_size << ",";
@@ -128,8 +134,17 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             TxoutType which_type = Solver(spent_output_data.scriptPubKey, solutions_data);
             const unsigned int spent_script_type = GetTxnOutputTypeEnum(which_type);
 
+            unsigned int input_size = GetSerializeSize(txin_data, PROTOCOL_VERSION);
+
+            input_script_types[spent_script_type][0] += 1;
+            input_script_types[spent_script_type][1] += GetTransactionInputWeight(txin_data);
+            input_script_types[spent_script_type][2] += input_size;
+            input_script_types[spent_script_type][3] += spent_output_size;
+            input_script_types[spent_script_type][4] += spent_output_data.nValue;
+
             input_data_string_stream << "{";
             input_data_string_stream << GetTransactionInputWeight(txin_data) << ",";
+            input_data_string_stream << input_size << ",";
             input_data_string_stream << spent_output_size << ",";
             input_data_string_stream << spent_output_data.nValue << ",";
             input_data_string_stream << spent_script_type;
@@ -174,6 +189,40 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         fee_rates_string_stream << ",";
     }
 
+    std::ostringstream output_script_types_string_stream;
+    output_script_types_string_stream << "{";
+    for (auto it = output_script_types.begin(); it != output_script_types.end(); ++it) {
+        output_script_types_string_stream << "{";
+        output_script_types_string_stream << it->first;
+        output_script_types_string_stream << ",";
+        auto arr = it->second;
+        for(auto it2 = std::begin(arr); it2 != std::end(arr); ++it2) {
+            output_script_types_string_stream << it2;
+            if ((it2 != std::end(arr)) && (std::next(it2) == std::end(arr))) continue;
+            output_script_types_string_stream << ",";
+        }
+        output_script_types_string_stream << "}";
+        if ((it != output_script_types.end()) && (next(it) == output_script_types.end())) continue;
+        output_script_types_string_stream << ",";
+    }
+
+    std::ostringstream input_script_types_string_stream;
+    input_script_types_string_stream << "{";
+    for (auto it = input_script_types.begin(); it != input_script_types.end(); ++it) {
+        input_script_types_string_stream << "{";
+        input_script_types_string_stream << it->first;
+        input_script_types_string_stream << ",";
+        auto arr = it->second;
+        for(auto it2 = std::begin(arr); it2 != std::end(arr); ++it2) {
+            input_script_types_string_stream << it2;
+            if ((it2 != std::end(arr)) && (std::next(it2) == std::end(arr))) continue;
+            input_script_types_string_stream << ",";
+        }
+        input_script_types_string_stream << "}";
+        if ((it != input_script_types.end()) && (next(it) == input_script_types.end())) continue;
+        input_script_types_string_stream << ",";
+    }
+
     fee_rates_string_stream << "}";
     output_data_string_stream << "}";
     input_data_string_stream << "}";
@@ -213,8 +262,11 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
                              "output_data, "
                              "input_data, "
 
-                             "transaction_data"
+                             "transaction_data, "
+                             "output_script_types, "
+                             "input_script_types"
                              ") "
+
                              "VALUES "
                              "("
                              "$1, "
@@ -241,7 +293,9 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
                              "$22, "
                              "$23, "
                              "$24, "
-                             "$25"
+                             "$25, "
+                             "$26, "
+                             "$27"
                              ");");
 
     auto r2{w.exec_prepared(
@@ -278,7 +332,9 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             output_data_string_stream.str(),
             input_data_string_stream.str(),
 
-            transaction_data_string_stream.str()
+            transaction_data_string_stream.str(),
+            output_script_types_string_stream.str(),
+            input_script_types_string_stream.str()
     )};
     w.commit();
 
@@ -290,6 +346,6 @@ TransactionData::TransactionData(const int &transaction_index, const CTransactio
     transaction_hash = transaction->GetHash().GetHex();
     is_coinbase = transaction->IsCoinBase();
     weight = GetTransactionWeight(*transaction);
-    vsize = (weight + WITNESS_SCALE_FACTOR - 1) / WITNESS_SCALE_FACTOR;
+    vsize = GetVirtualTransactionSize(*transaction);
     is_segwit_out_spend = is_coinbase ? false : !(transaction->GetHash() == transaction->GetWitnessHash());
 };
