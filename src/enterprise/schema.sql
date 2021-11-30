@@ -8,8 +8,8 @@ CREATE TABLE bitcoin.blocks
 (
     hash               TEXT PRIMARY KEY,
     merkle_root        TEXT,
-    time               BIGINT,
-    median_time        BIGINT,
+    time               timestamp with time zone,
+    median_time        timestamp with time zone,
     height             BIGINT,
     subsidy            BIGINT,
     transactions_count BIGINT,
