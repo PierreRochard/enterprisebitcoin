@@ -28,6 +28,7 @@ CREATE TABLE bitcoin.blocks
 
     inputs_count        BIGINT,
     total_output_value  BIGINT,
+    total_input_value   BIGINT,
     total_fees          BIGINT,
 
     total_size          BIGINT,

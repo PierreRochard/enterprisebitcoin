@@ -42,8 +42,9 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
     unsigned int segwit_spend_count = 0;
     unsigned int outputs_count = 0;
     unsigned int inputs_count = 0;
-    unsigned int total_output_value = 0;
-    unsigned int total_fees = 0;
+    CAmount total_output_value = 0;
+    CAmount total_input_value = 0;
+    CAmount total_fees = 0;
     unsigned int total_size = 0;
     unsigned int total_vsize = 0;
     unsigned int total_weight = 0;
@@ -158,6 +159,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         outputs_count += transaction_data.m_transaction->vout.size();
         inputs_count += transaction_data.m_transaction->vin.size();
         total_output_value += transaction_data.total_output_value;
+        total_input_value += transaction_data.total_input_value;
         total_fees += transaction_data.GetFee();
         total_size += transaction_data.m_transaction->GetTotalSize();
         total_vsize += transaction_data.vsize;
@@ -197,7 +199,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         output_script_types_string_stream << ",";
         auto arr = it->second;
         for(auto it2 = std::begin(arr); it2 != std::end(arr); ++it2) {
-            output_script_types_string_stream << it2;
+            output_script_types_string_stream << *it2;
             if ((it2 != std::end(arr)) && (std::next(it2) == std::end(arr))) continue;
             output_script_types_string_stream << ",";
         }
@@ -214,7 +216,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         input_script_types_string_stream << ",";
         auto arr = it->second;
         for(auto it2 = std::begin(arr); it2 != std::end(arr); ++it2) {
-            input_script_types_string_stream << it2;
+            input_script_types_string_stream << *it2;
             if ((it2 != std::end(arr)) && (std::next(it2) == std::end(arr))) continue;
             input_script_types_string_stream << ",";
         }
@@ -227,6 +229,8 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
     output_data_string_stream << "}";
     input_data_string_stream << "}";
     transaction_data_string_stream << "}";
+    input_script_types_string_stream << "}";
+    output_script_types_string_stream << "}";
 
     c.prepare("InsertBlock", "INSERT INTO bitcoin.blocks "
                              "("
@@ -252,6 +256,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
 
                              "inputs_count, "
                              "total_output_value, "
+                             "total_input_value, "
                              "total_fees, "
 
                              "total_size, "
@@ -295,8 +300,9 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
                              "$24, "
                              "$25, "
                              "$26, "
-                             "$27"
-                             ");");
+                             "$27, "
+                             "$28"
+                             ") ON CONFLICT (hash) DO NOTHING;");
 
     auto r2{w.exec_prepared(
             "InsertBlock",
@@ -322,6 +328,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
 
             inputs_count,
             total_output_value,
+            total_input_value,
             total_fees,
 
             total_size,
