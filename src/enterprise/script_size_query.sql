@@ -1,23 +1,24 @@
 SELECT b.daydate,
        heights,
-       total_size,
+       round(total_size / 1000000 / heights, 2),
        side,
        script_type,
-       sum(script_type_size)                                         as script_type_size,
+       round(sum(script_type_size) / 1000000 / heights, 2)           as script_type_size,
+
        (sum(script_type_size)::float / total_size::float * 100)::int as percentage
 FROM (
          SELECT median_time::date                                         as daydate,
                 height,
                 (jsonb_array_elements(output_script_types) ->> 0)::bigint as script_type,
                 (jsonb_array_elements(output_script_types) ->> 2)::bigint as script_type_size,
-                quote_literal('output')                                   as side
+                'output'::text                                            as side
          FROM bitcoin.blocks
          UNION ALL
          SELECT median_time::date                                        as daydate,
                 height,
                 (jsonb_array_elements(input_script_types) ->> 0)::bigint as script_type,
                 (jsonb_array_elements(input_script_types) ->> 3)::bigint as script_type_size,
-                quote_literal('input')                                   as side
+                'input'::text                                            as side
          FROM bitcoin.blocks
          ORDER BY height desc
      ) as b
@@ -28,5 +29,6 @@ FROM (
     FROM bitcoin.blocks
     GROUP BY median_time::date
 ) c ON b.daydate = c.daydate
+WHERE script_type in (2, 3)
 GROUP BY b.daydate, heights, total_size, side, script_type
 ORDER BY b.daydate desc;
