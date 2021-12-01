@@ -45,9 +45,6 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
     CAmount total_output_value = 0;
     CAmount total_input_value = 0;
     CAmount total_fees = 0;
-    unsigned int total_size = 0;
-    unsigned int total_vsize = 0;
-    unsigned int total_weight = 0;
 
     std::ostringstream output_data_string_stream;
     output_data_string_stream << "[";
@@ -161,9 +158,6 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
         total_output_value += transaction_data.total_output_value;
         total_input_value += transaction_data.total_input_value;
         total_fees += transaction_data.GetFee();
-        total_size += transaction_data.m_transaction->GetTotalSize();
-        total_vsize += transaction_data.vsize;
-        total_weight += transaction_data.weight;
 
         transaction_data_string_stream << "[";
         transaction_data_string_stream << transaction_data.m_transaction->GetTotalSize() << ",";
@@ -331,9 +325,9 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
             total_input_value,
             total_fees,
 
-            total_size,
-            total_vsize,
-            total_weight,
+            GetSerializeSize(block, CLIENT_VERSION),
+            block.vtx.size(),
+            GetBlockWeight(block),
 
             fee_rates_string_stream.str(),
             output_data_string_stream.str(),
