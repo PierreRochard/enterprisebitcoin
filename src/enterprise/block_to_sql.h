@@ -7,7 +7,6 @@
 #include <validation.h>
 
 
-static constexpr size_t PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
 
 struct FeeData {
     unsigned int fee;
@@ -47,15 +46,12 @@ struct TransactionData
 
 class BlockToSql
 {
-    const CBlockIndex m_block_index;
-    const CBlock m_block;
-
-    const std::string m_block_header_hash;
-
-    CChainState* m_chainstate{nullptr};
-
+//    const CBlockIndex m_block_index;
+//    const CBlock& m_block;
+//    CCoinsViewCache& view;
+//    const std::string m_block_header_hash;
 public:
-    BlockToSql(const CBlockIndex block_index, const CBlock block, CChainState& active_chainstate);
+    BlockToSql(CBlockIndex* block_index, const CBlock& block, CCoinsViewCache& view);
 };
 
 

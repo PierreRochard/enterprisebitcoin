@@ -20,11 +20,9 @@
 
 using namespace dotenv;
 
-BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block, CChainState& active_chainstate) : m_block_index(block_index),
-                                                                            m_block(block),
-                                                                            m_block_header_hash(
-                                                                                    block.GetBlockHeader().GetHash().GetHex()),
-                                                                                                            m_chainstate(&active_chainstate){
+BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsViewCache& view) {
+    static constexpr size_t PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
+
     auto &dotenv = env;
     dotenv.config();
 
@@ -56,10 +54,10 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block, CChain
     std::ostringstream transaction_data_string_stream;
     transaction_data_string_stream << "[";
 
-    for (std::size_t transaction_index = 0; transaction_index < m_block.vtx.size(); ++transaction_index) {
-        const CTransactionRef &transaction = m_block.vtx[transaction_index];
+    for (std::size_t transaction_index = 0; transaction_index < block.vtx.size(); ++transaction_index) {
+        const CTransactionRef &transaction = block.vtx[transaction_index];
 
-        TransactionData transaction_data = TransactionData{transaction_index, m_block.vtx[transaction_index]};
+        TransactionData transaction_data = TransactionData{transaction_index, block.vtx[transaction_index]};
 
         // Outputs
         for (std::size_t output_vector = 0; output_vector < transaction->vout.size(); ++output_vector) {
@@ -82,7 +80,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block, CChain
             output_data_string_stream << transaction_data.GetFeeRate() << ",";
             output_data_string_stream << script_type;
             output_data_string_stream << "]";
-            if (transaction_index != m_block.vtx.size()-1 || output_vector != transaction->vout.size()-1) {
+            if (transaction_index != block.vtx.size()-1 || output_vector != transaction->vout.size()-1) {
                 output_data_string_stream << ",";
             }
         }
@@ -94,44 +92,20 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block, CChain
             }
 
             const CTxIn &txin_data = transaction->vin[input_vector];
-
-//            uint256 hash_block;
-//            CTransactionRef spent_output_transaction = GetTransaction(
-//                    nullptr,
-//                    nullptr,
-//                    txin_data.prevout.hash,
-//                    Params().GetConsensus(),
-//                    hash_block
-//            );
-//            if (hash_block.IsNull()) {
-//                for (std::size_t transaction_index = 0; transaction_index < m_block.vtx.size(); ++transaction_index) {
-//                    const CTransactionRef &transaction = m_block.vtx[transaction_index];
-//                    if (txin_data.prevout.hash == transaction->GetHash() ||
-//                        txin_data.prevout.hash == transaction->GetWitnessHash()) {
-//                        spent_output_transaction = transaction;
-//                        hash_block = block.GetBlockHeader().GetHash();
-//                    }
-//                }
-//            }
-//            if (hash_block.IsNull()) {
-//                if (!g_txindex) {
-//                    LogPrintf("Use -txindex\n");
-//                } else {
-//                    LogPrintf("No such blockchain transaction\n");
-//                }
-//                LogPrintf("%s-%i not found while processing block \n", txin_data.prevout.hash.GetHex(),
-//                          txin_data.prevout.n);
-//            }
-
-            const Coin& coin = m_chainstate->CoinsTip().AccessCoin(txin_data.prevout);
+            const Coin& coin = view.AccessCoin(txin_data.prevout);
+            CTxOut spent_output_data = coin.out;
             if (coin.IsSpent())
             {
-                LogPrintf("%s-%i not found while processing block \n",
-                          txin_data.prevout.hash.GetHex(),
-                          txin_data.prevout.n);
-                StartShutdown();
+                CTransactionRef spent_output_transaction;
+                for (std::size_t transaction_index = 0; transaction_index < block.vtx.size(); ++transaction_index) {
+                    const CTransactionRef &transaction = block.vtx[transaction_index];
+                    if (txin_data.prevout.hash == transaction->GetHash() ||
+                        txin_data.prevout.hash == transaction->GetWitnessHash()) {
+                        spent_output_transaction = transaction;
+                    }
+                }
+                 spent_output_data = spent_output_transaction->vout[txin_data.prevout.n];
             }
-            const CTxOut& spent_output_data = coin.out;
 
             unsigned int spent_output_size = GetSerializeSize(spent_output_data, PROTOCOL_VERSION);
             unsigned int spent_utxo_size = spent_output_size + PER_UTXO_OVERHEAD;
@@ -157,7 +131,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block, CChain
             input_data_string_stream << spent_output_data.nValue << ",";
             input_data_string_stream << spent_script_type;
             input_data_string_stream << "]";
-            if (transaction_index != m_block.vtx.size()-1 || input_vector != transaction->vin.size()-1) {
+            if (transaction_index != block.vtx.size()-1 || input_vector != transaction->vin.size()-1) {
                 input_data_string_stream << ",";
             }
         }
@@ -175,7 +149,7 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block, CChain
         transaction_data_string_stream << transaction_data.weight << ",";
         transaction_data_string_stream << transaction_data.GetFee();
         transaction_data_string_stream << "]";
-        if (transaction_index != m_block.vtx.size()-1) {
+        if (transaction_index != block.vtx.size()-1) {
             transaction_data_string_stream << ",";
         }
 
@@ -310,23 +284,23 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block, CChain
 
     auto r2{w.exec_prepared(
             "InsertBlock",
-            m_block_header_hash,                   // hash
-            m_block_index.hashMerkleRoot.GetHex(), // merkle_root
-            m_block_index.GetBlockTime(),          // time
+            block.GetBlockHeader().GetHash().GetHex(),                   // hash
+            block_index->hashMerkleRoot.GetHex(), // merkle_root
+            block_index->GetBlockTime(),          // time
 
-            m_block_index.GetMedianTimePast(),     // median_time
-            m_block_index.nHeight,                 // height
-            GetBlockSubsidy(m_block_index.nHeight, Params().GetConsensus()), // subsidy
+            block_index->GetMedianTimePast(),     // median_time
+            block_index->nHeight,                 // height
+            GetBlockSubsidy(block_index->nHeight, Params().GetConsensus()), // subsidy
 
-            m_block_index.nTx,                     // transactions_count
-            m_block_index.nVersion,                // version
-            m_block_index.nStatus,                 // status
+            block_index->nTx,                     // transactions_count
+            block_index->nVersion,                // version
+            block_index->nStatus,                 // status
 
-            m_block_index.nBits,                   // bits
-            m_block_index.nNonce,                  // nonce
-            GetDifficulty(&m_block_index),         // difficulty
+            block_index->nBits,                   // bits
+            block_index->nNonce,                  // nonce
+            GetDifficulty(block_index),         // difficulty
 
-            m_block_index.nChainWork.GetHex(),      // chain_work
+            block_index->nChainWork.GetHex(),      // chain_work
             segwit_spend_count,
             outputs_count,
 
