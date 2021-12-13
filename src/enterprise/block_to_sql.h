@@ -2,6 +2,9 @@
 #define BLOCK_TO_SQL_H
 
 #include <chain.h>
+#include <coins.h>
+#include <shutdown.h>
+#include <validation.h>
 
 
 static constexpr size_t PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
@@ -49,8 +52,10 @@ class BlockToSql
 
     const std::string m_block_header_hash;
 
+    CChainState* m_chainstate{nullptr};
+
 public:
-    BlockToSql(const CBlockIndex block_index, const CBlock block);
+    BlockToSql(const CBlockIndex block_index, const CBlock block, CChainState& active_chainstate);
 };
 
 

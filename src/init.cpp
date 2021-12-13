@@ -1377,9 +1377,6 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     }
 #endif
 
-    enterpriseNotificationInterface = new EnterpriseNotificationInterface();
-    RegisterValidationInterface(enterpriseNotificationInterface);
-
     // ********************************************************* Step 7: load block chain
 
     fReindex = args.GetBoolArg("-reindex", false);
@@ -1651,6 +1648,10 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
             return false;
         }
     }
+
+    enterpriseNotificationInterface = new EnterpriseNotificationInterface(chainman.ActiveChainstate());
+    RegisterValidationInterface(enterpriseNotificationInterface);
+
 
     // ********************************************************* Step 9: load wallet
     for (const auto& client : node.chain_clients) {

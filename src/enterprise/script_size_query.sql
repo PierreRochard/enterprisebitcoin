@@ -4,7 +4,6 @@ SELECT b.daydate,
        side,
        script_type,
        round(sum(script_type_size) / 1000000 / heights, 2)           as script_type_size,
-
        (sum(script_type_size)::float / total_size::float * 100)::int as percentage
 FROM (
          SELECT median_time::date                                         as daydate,

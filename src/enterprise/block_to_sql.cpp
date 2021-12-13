@@ -20,10 +20,11 @@
 
 using namespace dotenv;
 
-BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_block_index(block_index),
+BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block, CChainState& active_chainstate) : m_block_index(block_index),
                                                                             m_block(block),
                                                                             m_block_header_hash(
-                                                                                    block.GetBlockHeader().GetHash().GetHex()) {
+                                                                                    block.GetBlockHeader().GetHash().GetHex()),
+                                                                                                            m_chainstate(&active_chainstate){
     auto &dotenv = env;
     dotenv.config();
 
@@ -94,35 +95,44 @@ BlockToSql::BlockToSql(const CBlockIndex block_index, const CBlock block) : m_bl
 
             const CTxIn &txin_data = transaction->vin[input_vector];
 
-            uint256 hash_block;
-            CTransactionRef spent_output_transaction = GetTransaction(
-                    nullptr,
-                    nullptr,
-                    txin_data.prevout.hash,
-                    Params().GetConsensus(),
-                    hash_block
-            );
-            if (hash_block.IsNull()) {
-                for (std::size_t transaction_index = 0; transaction_index < m_block.vtx.size(); ++transaction_index) {
-                    const CTransactionRef &transaction = m_block.vtx[transaction_index];
-                    if (txin_data.prevout.hash == transaction->GetHash() ||
-                        txin_data.prevout.hash == transaction->GetWitnessHash()) {
-                        spent_output_transaction = transaction;
-                        hash_block = block.GetBlockHeader().GetHash();
-                    }
-                }
-            }
-            if (hash_block.IsNull()) {
-                if (!g_txindex) {
-                    LogPrintf("Use -txindex\n");
-                } else {
-                    LogPrintf("No such blockchain transaction\n");
-                }
-                LogPrintf("%s-%i not found while processing block \n", txin_data.prevout.hash.GetHex(),
-                          txin_data.prevout.n);
-            }
+//            uint256 hash_block;
+//            CTransactionRef spent_output_transaction = GetTransaction(
+//                    nullptr,
+//                    nullptr,
+//                    txin_data.prevout.hash,
+//                    Params().GetConsensus(),
+//                    hash_block
+//            );
+//            if (hash_block.IsNull()) {
+//                for (std::size_t transaction_index = 0; transaction_index < m_block.vtx.size(); ++transaction_index) {
+//                    const CTransactionRef &transaction = m_block.vtx[transaction_index];
+//                    if (txin_data.prevout.hash == transaction->GetHash() ||
+//                        txin_data.prevout.hash == transaction->GetWitnessHash()) {
+//                        spent_output_transaction = transaction;
+//                        hash_block = block.GetBlockHeader().GetHash();
+//                    }
+//                }
+//            }
+//            if (hash_block.IsNull()) {
+//                if (!g_txindex) {
+//                    LogPrintf("Use -txindex\n");
+//                } else {
+//                    LogPrintf("No such blockchain transaction\n");
+//                }
+//                LogPrintf("%s-%i not found while processing block \n", txin_data.prevout.hash.GetHex(),
+//                          txin_data.prevout.n);
+//            }
 
-            const CTxOut &spent_output_data = spent_output_transaction->vout[txin_data.prevout.n];
+            const Coin& coin = m_chainstate->CoinsTip().AccessCoin(txin_data.prevout);
+            if (coin.IsSpent())
+            {
+                LogPrintf("%s-%i not found while processing block \n",
+                          txin_data.prevout.hash.GetHex(),
+                          txin_data.prevout.n);
+                StartShutdown();
+            }
+            const CTxOut& spent_output_data = coin.out;
+
             unsigned int spent_output_size = GetSerializeSize(spent_output_data, PROTOCOL_VERSION);
             unsigned int spent_utxo_size = spent_output_size + PER_UTXO_OVERHEAD;
             transaction_data.total_input_value += spent_output_data.nValue;
