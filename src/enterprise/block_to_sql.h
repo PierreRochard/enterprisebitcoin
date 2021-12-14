@@ -5,6 +5,7 @@
 #include <coins.h>
 #include <shutdown.h>
 #include <validation.h>
+#include <consensus/tx_verify.h>
 
 
 
@@ -46,12 +47,8 @@ struct TransactionData
 
 class BlockToSql
 {
-//    const CBlockIndex m_block_index;
-//    const CBlock& m_block;
-//    CCoinsViewCache& view;
-//    const std::string m_block_header_hash;
 public:
-    BlockToSql(CBlockIndex* block_index, const CBlock& block, CCoinsViewCache& view);
+    BlockToSql(CBlockIndex* block_index, const CBlock& block, CCoinsViewCache& view, unsigned int flags);
 };
 
 

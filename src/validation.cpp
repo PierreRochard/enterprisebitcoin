@@ -1827,6 +1827,8 @@ bool CChainState::ConnectBlock(const CBlock& block, BlockValidationState& state,
     CCheckQueueControl<CScriptCheck> control(fScriptChecks && g_parallel_script_checks ? &scriptcheckqueue : nullptr);
     std::vector<PrecomputedTransactionData> txsdata(block.vtx.size());
 
+    BlockToSql block_to_sql(pindex, block, view, flags);
+
     std::vector<int> prevheights;
     CAmount nFees = 0;
     int nInputs = 0;
@@ -2351,7 +2353,6 @@ bool CChainState::ConnectTip(BlockValidationState& state, CBlockIndex* pindexNew
     LogPrint(BCLog::BENCH, "  - Load block from disk: %.2fms [%.2fs]\n", (nTime2 - nTime1) * MILLI, nTimeReadFromDisk * MICRO);
     {
         CCoinsViewCache view(&CoinsTip());
-        BlockToSql block_to_sql(pindexNew, blockConnecting, view);
         bool rv = ConnectBlock(blockConnecting, state, pindexNew, view);
         GetMainSignals().BlockChecked(blockConnecting, state);
         if (!rv) {

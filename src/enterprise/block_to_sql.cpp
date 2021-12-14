@@ -6,6 +6,7 @@
 #include <pubkey.h>
 #include <primitives/block.h>
 #include <rpc/blockchain.h>
+#include <script/interpreter.h>
 #include <script/standard.h>
 #include <serialize.h>
 #include <validation.h>
@@ -20,8 +21,9 @@
 
 using namespace dotenv;
 
-BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsViewCache& view) {
-    static constexpr size_t PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
+BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, unsigned int flags) {
+    static constexpr size_t
+    PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
 
     auto &dotenv = env;
     dotenv.config();
@@ -35,8 +37,8 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
 
     std::map<CAmount, unsigned int> fee_rates;
 
-    std::map<unsigned int, std::array<CAmount, 3>> output_script_types;
-    std::map<unsigned int, std::array<CAmount, 5>> input_script_types;
+    std::map<unsigned int, std::array<CAmount, 4>> output_script_types;
+    std::map<unsigned int, std::array<CAmount, 6>> input_script_types;
 
     unsigned int segwit_spend_count = 0;
     unsigned int outputs_count = 0;
@@ -44,6 +46,11 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
     CAmount total_output_value = 0;
     CAmount total_input_value = 0;
     CAmount total_fees = 0;
+
+    int64_t block_output_legacy_signature_operations = 0;
+    int64_t block_input_legacy_signature_operations = 0;
+    int64_t block_input_p2sh_signature_operations = 0;
+    int64_t block_input_witness_signature_operations = 0;
 
     std::ostringstream output_data_string_stream;
     output_data_string_stream << "[";
@@ -64,6 +71,10 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
             const CTxOut &txout_data = transaction->vout[output_vector];
             unsigned int output_size = GetSerializeSize(txout_data, PROTOCOL_VERSION);
             unsigned int utxo_size = output_size + PER_UTXO_OVERHEAD;
+            int64_t this_output_legacy_signature_operations =
+                    txout_data.scriptPubKey.GetSigOpCount(false) * WITNESS_SCALE_FACTOR;
+            block_output_legacy_signature_operations += this_output_legacy_signature_operations;
+
             transaction_data.total_output_value += txout_data.nValue;
             transaction_data.utxo_size_inc += utxo_size;
 
@@ -73,6 +84,7 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
             output_script_types[script_type][0] += 1;
             output_script_types[script_type][1] += output_size;
             output_script_types[script_type][2] += txout_data.nValue;
+            output_script_types[script_type][3] += this_output_legacy_signature_operations;
 
             output_data_string_stream << "[";
             output_data_string_stream << output_size << ",";
@@ -80,7 +92,7 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
             output_data_string_stream << transaction_data.GetFeeRate() << ",";
             output_data_string_stream << script_type;
             output_data_string_stream << "]";
-            if (transaction_index != block.vtx.size()-1 || output_vector != transaction->vout.size()-1) {
+            if (transaction_index != block.vtx.size() - 1 || output_vector != transaction->vout.size() - 1) {
                 output_data_string_stream << ",";
             }
         }
@@ -92,10 +104,9 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
             }
 
             const CTxIn &txin_data = transaction->vin[input_vector];
-            const Coin& coin = view.AccessCoin(txin_data.prevout);
+            const Coin &coin = view.AccessCoin(txin_data.prevout);
             CTxOut spent_output_data = coin.out;
-            if (coin.IsSpent())
-            {
+            if (coin.IsSpent()) {
                 CTransactionRef spent_output_transaction;
                 for (std::size_t transaction_index = 0; transaction_index < block.vtx.size(); ++transaction_index) {
                     const CTransactionRef &transaction = block.vtx[transaction_index];
@@ -104,8 +115,27 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
                         spent_output_transaction = transaction;
                     }
                 }
-                 spent_output_data = spent_output_transaction->vout[txin_data.prevout.n];
+                spent_output_data = spent_output_transaction->vout[txin_data.prevout.n];
             }
+
+            int64_t this_input_legacy_signature_operations =
+                    txin_data.scriptSig.GetSigOpCount(false) * WITNESS_SCALE_FACTOR;
+            block_input_legacy_signature_operations += this_input_legacy_signature_operations;
+
+            int64_t this_input_p2sh_signature_operations = 0;
+            if (flags & SCRIPT_VERIFY_P2SH && spent_output_data.scriptPubKey.IsPayToScriptHash()) {
+                this_input_p2sh_signature_operations = spent_output_data.scriptPubKey.GetSigOpCount(
+                        txin_data.scriptSig) * WITNESS_SCALE_FACTOR;
+            }
+            block_input_p2sh_signature_operations += this_input_p2sh_signature_operations;
+
+
+            int64_t this_input_witness_signature_operations = 0;
+            this_input_witness_signature_operations += CountWitnessSigOps(txin_data.scriptSig,
+                                                                          spent_output_data.scriptPubKey,
+                                                                          &txin_data.scriptWitness,
+                                                                          flags);
+            block_input_witness_signature_operations += this_input_witness_signature_operations;
 
             unsigned int spent_output_size = GetSerializeSize(spent_output_data, PROTOCOL_VERSION);
             unsigned int spent_utxo_size = spent_output_size + PER_UTXO_OVERHEAD;
@@ -123,6 +153,9 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
             input_script_types[spent_script_type][2] += input_size;
             input_script_types[spent_script_type][3] += spent_output_size;
             input_script_types[spent_script_type][4] += spent_output_data.nValue;
+            input_script_types[spent_script_type][5] += this_input_legacy_signature_operations;
+            input_script_types[spent_script_type][5] += this_input_p2sh_signature_operations;
+            input_script_types[spent_script_type][5] += this_input_witness_signature_operations;
 
             input_data_string_stream << "[";
             input_data_string_stream << GetTransactionInputWeight(txin_data) << ",";
@@ -131,7 +164,7 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
             input_data_string_stream << spent_output_data.nValue << ",";
             input_data_string_stream << spent_script_type;
             input_data_string_stream << "]";
-            if (transaction_index != block.vtx.size()-1 || input_vector != transaction->vin.size()-1) {
+            if (transaction_index != block.vtx.size() - 1 || input_vector != transaction->vin.size() - 1) {
                 input_data_string_stream << ",";
             }
         }
@@ -149,7 +182,7 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
         transaction_data_string_stream << transaction_data.weight << ",";
         transaction_data_string_stream << transaction_data.GetFee();
         transaction_data_string_stream << "]";
-        if (transaction_index != block.vtx.size()-1) {
+        if (transaction_index != block.vtx.size() - 1) {
             transaction_data_string_stream << ",";
         }
 
@@ -176,7 +209,7 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
         output_script_types_string_stream << it->first;
         output_script_types_string_stream << ",";
         auto arr = it->second;
-        for(auto it2 = std::begin(arr); it2 != std::end(arr); ++it2) {
+        for (auto it2 = std::begin(arr); it2 != std::end(arr); ++it2) {
             output_script_types_string_stream << *it2;
             if ((it2 != std::end(arr)) && (std::next(it2) == std::end(arr))) continue;
             output_script_types_string_stream << ",";
@@ -193,7 +226,7 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
         input_script_types_string_stream << it->first;
         input_script_types_string_stream << ",";
         auto arr = it->second;
-        for(auto it2 = std::begin(arr); it2 != std::end(arr); ++it2) {
+        for (auto it2 = std::begin(arr); it2 != std::end(arr); ++it2) {
             input_script_types_string_stream << *it2;
             if ((it2 != std::end(arr)) && (std::next(it2) == std::end(arr))) continue;
             input_script_types_string_stream << ",";
@@ -247,7 +280,13 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
 
                              "transaction_data, "
                              "output_script_types, "
-                             "input_script_types"
+                             "input_script_types, "
+
+
+                             "output_legacy_signature_operations, "
+                             "input_legacy_signature_operations, "
+                             "input_p2sh_signature_operations, "
+                             "input_witness_signature_operations"
                              ") "
 
                              "VALUES "
@@ -279,7 +318,11 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
                              "$25, "
                              "$26, "
                              "$27, "
-                             "$28"
+                             "$28, "
+                             "$29, "
+                             "$30, "
+                             "$31, "
+                             "$32"
                              ") ON CONFLICT (hash) DO NOTHING;");
 
     auto r2{w.exec_prepared(
@@ -319,7 +362,12 @@ BlockToSql::BlockToSql(CBlockIndex* block_index, const CBlock& block,  CCoinsVie
 
             transaction_data_string_stream.str(),
             output_script_types_string_stream.str(),
-            input_script_types_string_stream.str()
+            input_script_types_string_stream.str(),
+
+            block_output_legacy_signature_operations,
+            block_input_legacy_signature_operations,
+            block_input_p2sh_signature_operations,
+            block_input_witness_signature_operations
     )};
     w.commit();
 
