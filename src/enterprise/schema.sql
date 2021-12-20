@@ -46,5 +46,9 @@ CREATE TABLE bitcoin.blocks
     output_legacy_signature_operations BIGINT,
     input_legacy_signature_operations  BIGINT,
     input_p2sh_signature_operations    BIGINT,
-    input_witness_signature_operations BIGINT
+    input_witness_signature_operations BIGINT,
+
+    outputs_total_size                 BIGINT,
+    inputs_total_size                  BIGINT,
+    net_utxo_size_impact               BIGINT
 );

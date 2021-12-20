@@ -37,8 +37,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
 
     std::map<CAmount, unsigned int> fee_rates;
 
-    std::map<unsigned int, std::array<CAmount, 4>> output_script_types;
-    std::map<unsigned int, std::array<CAmount, 6>> input_script_types;
+    std::map<unsigned int, std::array<uint64_t, 4>> output_script_types;
+    std::map<unsigned int, std::array<uint64_t, 6>> input_script_types;
 
     unsigned int segwit_spend_count = 0;
     unsigned int outputs_count = 0;
@@ -47,10 +47,15 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
     CAmount total_input_value = 0;
     CAmount total_fees = 0;
 
-    int64_t block_output_legacy_signature_operations = 0;
-    int64_t block_input_legacy_signature_operations = 0;
-    int64_t block_input_p2sh_signature_operations = 0;
-    int64_t block_input_witness_signature_operations = 0;
+    uint64_t block_output_legacy_signature_operations = 0;
+    uint64_t block_input_legacy_signature_operations = 0;
+    uint64_t block_input_p2sh_signature_operations = 0;
+    uint64_t block_input_witness_signature_operations = 0;
+
+    uint64_t block_outputs_total_size = 0;
+    uint64_t block_inputs_total_size = 0;
+
+    int64_t block_net_utxo_size_impact = 0;
 
     std::ostringstream output_data_string_stream;
     output_data_string_stream << "[";
@@ -69,14 +74,19 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
         // Outputs
         for (std::size_t output_vector = 0; output_vector < transaction->vout.size(); ++output_vector) {
             const CTxOut &txout_data = transaction->vout[output_vector];
-            unsigned int output_size = GetSerializeSize(txout_data, PROTOCOL_VERSION);
-            unsigned int utxo_size = output_size + PER_UTXO_OVERHEAD;
+            int64_t output_size = GetSerializeSize(txout_data, PROTOCOL_VERSION);
+            if (output_size > 300) {
+                LogPrintf("\n");
+            }
+            block_outputs_total_size += output_size;
+            int64_t utxo_size = output_size + PER_UTXO_OVERHEAD;
             int64_t this_output_legacy_signature_operations =
                     txout_data.scriptPubKey.GetSigOpCount(false) * WITNESS_SCALE_FACTOR;
             block_output_legacy_signature_operations += this_output_legacy_signature_operations;
 
             transaction_data.total_output_value += txout_data.nValue;
             transaction_data.utxo_size_inc += utxo_size;
+            block_net_utxo_size_impact += utxo_size;
 
             std::vector <std::vector<unsigned char>> solutions_data;
             TxoutType which_type = Solver(txout_data.scriptPubKey, solutions_data);
@@ -138,15 +148,21 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             block_input_witness_signature_operations += this_input_witness_signature_operations;
 
             unsigned int spent_output_size = GetSerializeSize(spent_output_data, PROTOCOL_VERSION);
+
+            if (spent_output_size > 300) {
+                LogPrintf("\n");
+            }
             unsigned int spent_utxo_size = spent_output_size + PER_UTXO_OVERHEAD;
             transaction_data.total_input_value += spent_output_data.nValue;
             transaction_data.utxo_size_inc -= spent_utxo_size;
+            block_net_utxo_size_impact -= spent_utxo_size;
 
             std::vector <std::vector<unsigned char>> solutions_data;
             TxoutType which_type = Solver(spent_output_data.scriptPubKey, solutions_data);
             const unsigned int spent_script_type = GetTxnOutputTypeEnum(which_type);
 
-            unsigned int input_size = GetSerializeSize(txin_data, PROTOCOL_VERSION);
+            uint64_t input_size = GetSerializeSize(txin_data, PROTOCOL_VERSION);
+            block_inputs_total_size += input_size;
 
             input_script_types[spent_script_type][0] += 1;
             input_script_types[spent_script_type][1] += GetTransactionInputWeight(txin_data);
@@ -286,7 +302,11 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "output_legacy_signature_operations, "
                              "input_legacy_signature_operations, "
                              "input_p2sh_signature_operations, "
-                             "input_witness_signature_operations"
+                             "input_witness_signature_operations, "
+
+                             "outputs_total_size, "
+                             "inputs_total_size, "
+                             "net_utxo_size_impact"
                              ") "
 
                              "VALUES "
@@ -322,7 +342,10 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "$29, "
                              "$30, "
                              "$31, "
-                             "$32"
+                             "$32, "
+                             "$33, "
+                             "$34, "
+                             "$35"
                              ") ON CONFLICT (hash) DO NOTHING;");
 
     auto r2{w.exec_prepared(
@@ -353,7 +376,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             total_fees,
 
             GetSerializeSize(block, CLIENT_VERSION),
-            block.vtx.size(),
+            GetBlockWeight(block)/WITNESS_SCALE_FACTOR,
             GetBlockWeight(block),
 
             fee_rates_string_stream.str(),
@@ -367,7 +390,11 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             block_output_legacy_signature_operations,
             block_input_legacy_signature_operations,
             block_input_p2sh_signature_operations,
-            block_input_witness_signature_operations
+            block_input_witness_signature_operations,
+
+            block_outputs_total_size,
+            block_inputs_total_size,
+            block_net_utxo_size_impact
     )};
     w.commit();
 
