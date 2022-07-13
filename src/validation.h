@@ -14,6 +14,7 @@
 #include <attributes.h>
 #include <chain.h>
 #include <consensus/amount.h>
+#include <enterprise/block_to_sql.h>
 #include <fs.h>
 #include <node/blockstorage.h>
 #include <policy/feerate.h>

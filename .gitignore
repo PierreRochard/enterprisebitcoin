@@ -150,3 +150,7 @@ osx_volname
 dist/
 
 /guix-build-*
+
+/.env
+/.idea
+/.vscode

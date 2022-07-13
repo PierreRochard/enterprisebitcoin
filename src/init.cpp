@@ -114,6 +114,9 @@ using node::fPruneMode;
 using node::fReindex;
 using node::nPruneTarget;
 
+#include <enterprise/enterprise_notification_interface.h>
+static EnterpriseNotificationInterface* enterpriseNotificationInterface = nullptr;
+
 static const bool DEFAULT_PROXYRANDOMIZE = true;
 static const bool DEFAULT_REST_ENABLE = false;
 
@@ -1564,6 +1567,10 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
             return false;
         }
     }
+
+    enterpriseNotificationInterface = new EnterpriseNotificationInterface(chainman.ActiveChainstate());
+    RegisterValidationInterface(enterpriseNotificationInterface);
+
 
     // ********************************************************* Step 9: load wallet
     for (const auto& client : node.chain_clients) {
