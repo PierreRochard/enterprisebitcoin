@@ -314,7 +314,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
 
                              "outputs_total_size, "
                              "inputs_total_size, "
-                             "net_utxo_size_impact"
+                             "net_utxo_size_impact, "
+                             "hash_prev_block"
                              ") "
 
                              "VALUES "
@@ -353,7 +354,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "$32, "
                              "$33, "
                              "$34, "
-                             "$35"
+                             "$35, "
+                             "$36"
                              ") ON CONFLICT (hash) DO NOTHING;");
 
     auto r2{w.exec_prepared(
@@ -402,7 +404,9 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
 
             block_outputs_total_size,
             block_inputs_total_size,
-            block_net_utxo_size_impact
+            block_net_utxo_size_impact,
+            block.GetBlockHeader().hashPrevBlock.ToString()
+
     )};
     w.commit();
 

@@ -7,6 +7,7 @@ DROP TABLE IF EXISTS bitcoin.blocks CASCADE;
 CREATE TABLE bitcoin.blocks
 (
     hash                               TEXT PRIMARY KEY,
+    hash_prev_block                    TEXT,
     merkle_root                        TEXT,
     time                               timestamp with time zone,
 
