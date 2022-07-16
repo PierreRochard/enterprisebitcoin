@@ -6,6 +6,7 @@
 #include <shutdown.h>
 #include <validation.h>
 #include <consensus/tx_verify.h>
+#include <txmempool.h>
 
 
 
@@ -51,5 +52,10 @@ public:
     BlockToSql(CBlockIndex* block_index, const CBlock& block, CCoinsViewCache& view, unsigned int flags);
 };
 
+class MempoolEntryToSql
+{
+public:
+    MempoolEntryToSql(CTxMemPoolEntry mempool_entry);
+};
 
 #endif //BLOCK_TO_SQL_H

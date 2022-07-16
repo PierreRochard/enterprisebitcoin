@@ -53,3 +53,35 @@ CREATE TABLE bitcoin.blocks
     inputs_total_size                  BIGINT,
     net_utxo_size_impact               BIGINT
 );
+
+DROP TABLE IF EXISTS bitcoin.mempool_entries CASCADE;
+DROP TABLE IF EXISTS bitcoin.mempool_families CASCADE;
+
+
+CREATE TABLE bitcoin.mempool_entries
+(
+    txid                 TEXT PRIMARY KEY,
+    wtxid                TEXT,
+    fee                  BIGINT,
+    weight               BIGINT,
+
+    memory_usage         BIGINT,
+    entry_time           timestamp with time zone,
+
+    entry_height         BIGINT,
+    spends_coinbase      BOOLEAN,
+    sigop_cost           BIGINT,
+
+    fee_delta            BIGINT,
+    height_lockpoint     BIGINT,
+    time_lockpoint       timestamp with time zone,
+
+    descendants_count    BIGINT,
+    descendants_size     BIGINT,
+    descendants_fees     BIGINT,
+
+    ancestors_count      BIGINT,
+    ancestors_size       BIGINT,
+    ancestors_fees       BIGINT,
+    ancestors_sigop_cost BIGINT
+);

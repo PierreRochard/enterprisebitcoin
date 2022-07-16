@@ -12,6 +12,7 @@
 #include <validation.h>
 #include <node/transaction.h>
 #include <index/txindex.h>
+#include <txmempool.h>
 
 #include <enterprise/block_to_sql.h>
 #include <enterprise/utilities.h>
@@ -20,6 +21,112 @@
 #include <pqxx/pqxx>
 
 using namespace dotenv;
+
+MempoolEntryToSql::MempoolEntryToSql(CTxMemPoolEntry mempool_entry) {
+    auto &dotenv = env;
+    dotenv.config();
+
+    std::stringstream connStream;
+    connStream << "dbname = "
+               << dotenv["PGDB"]
+               << " user = "
+               << dotenv["PGUSER"]
+               << " password = "
+               << dotenv["PGPASSWORD"]
+               << " hostaddr = "
+               << dotenv["PGHOST"]
+               << " port = "
+               << dotenv["PGPORT"];
+    pqxx::connection c(connStream.str());
+
+    pqxx::work w(c);
+
+
+    c.prepare("InsertMempoolEntry", "INSERT INTO bitcoin.mempool_entries "
+                                    "("
+                                    "txid, "
+                                    "wtxid, "
+                                    "fee, "
+                                    "weight, "
+
+                                    "memory_usage, "
+                                    "entry_time, "
+
+                                    "entry_height, "
+                                    "spends_coinbase, "
+                                    "sigop_cost, "
+
+                                    "height_lockpoint, "
+                                    "time_lockpoint, "
+
+                                    "descendants_count, "
+                                    "descendants_size, "
+                                    "descendants_fees, "
+
+                                    "ancestors_count, "
+                                    "ancestors_size, "
+                                    "ancestors_fees, "
+                                    "ancestors_sigop_cost "
+
+                                    ") "
+
+                                    "VALUES "
+                                    "("
+                                    "$1, "
+                                    "$2, "
+                                    "$3, "
+                                    "$4, "
+
+                                    "$5, "
+                                    "to_timestamp($6), "
+
+                                    "$7, "
+                                    "$8, "
+                                    "$9, "
+
+                                    "$10, "
+                                    "to_timestamp($11), "
+
+                                    "$12, "
+                                    "$13, "
+                                    "$14, "
+
+                                    "$15, "
+                                    "$16, "
+                                    "$17, "
+                                    "$18 "
+                                    ") ON CONFLICT (txid) DO NOTHING;");
+
+    auto r2{w.exec_prepared(
+            "InsertMempoolEntry",
+            mempool_entry.GetTx().GetHash().GetHex(),                   // 1 txid
+            mempool_entry.GetTx().GetWitnessHash().GetHex(),            // 2 wtxid
+            mempool_entry.GetFee(),                                     // 3 fee
+            mempool_entry.GetTxWeight(),                                // 4 weight
+
+            mempool_entry.DynamicMemoryUsage(),                         // 5 memory_usage
+            mempool_entry.GetTime().count(),                            // 6 entry_time
+
+            mempool_entry.GetHeight(),                                  // 7 entry_height
+            mempool_entry.GetSpendsCoinbase(),                          // 8 spends_coinbase
+            mempool_entry.GetSigOpCost(),                               // 9 sigop_cost
+
+            mempool_entry.GetLockPoints().height,                       // 10 height_lockpoint
+            mempool_entry.GetLockPoints().time,                         // 11 time_lockpoint
+
+            mempool_entry.GetCountWithDescendants(),                // 12 descendants_count
+            mempool_entry.GetSizeWithDescendants(),                 // 13 descendants_size
+            mempool_entry.GetModFeesWithDescendants(),              // 14 descendants_fees
+
+            mempool_entry.GetCountWithAncestors(),                  // 15 ancestors_count
+            mempool_entry.GetSizeWithAncestors(),                   // 16 ancestors_size
+            mempool_entry.GetModFeesWithAncestors(),                // 17 ancestors_fees
+            mempool_entry.GetSigOpCostWithAncestors()               // 18 ancestors_sigop_cost
+
+    )};
+    w.commit();
+
+};
 
 BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, unsigned int flags) {
     static constexpr size_t

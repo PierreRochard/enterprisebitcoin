@@ -19,6 +19,8 @@
 #include <util/time.h>
 #include <validationinterface.h>
 
+#include <enterprise/block_to_sql.h>
+
 #include <cmath>
 #include <optional>
 
@@ -490,6 +492,7 @@ void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, setEntries &setAnces
     // all the appropriate checks.
     indexed_transaction_set::iterator newit = mapTx.insert(entry).first;
 
+    MempoolEntryToSql mempool_entry_to_sql(entry);
     // Update transaction for any feeDelta created by PrioritiseTransaction
     // TODO: refactor so that the fee delta is calculated before inserting
     // into mapTx.
