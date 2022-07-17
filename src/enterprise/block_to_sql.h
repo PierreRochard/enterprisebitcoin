@@ -9,7 +9,6 @@
 #include <txmempool.h>
 
 
-
 struct FeeData {
     unsigned int fee;
     unsigned int size;
@@ -17,8 +16,7 @@ struct FeeData {
     unsigned int weight;
 };
 
-struct TransactionData
-{
+struct TransactionData {
     const int &m_transaction_index;
     const CTransactionRef &m_transaction;
 
@@ -35,27 +33,28 @@ struct TransactionData
 
     TransactionData(const int &transaction_index, const CTransactionRef &transaction);
 
-    CAmount GetFee()
-    {
+    CAmount GetFee() {
         return is_coinbase ? 0 : total_input_value - total_output_value;
     };
 
-    CAmount GetFeeRate()
-    {
-        return this->GetFee()/this->vsize;
+    CAmount GetFeeRate() {
+        return this->GetFee() / this->vsize;
     };
 };
 
-class BlockToSql
-{
+class BlockToSql {
 public:
-    BlockToSql(CBlockIndex* block_index, const CBlock& block, CCoinsViewCache& view, unsigned int flags);
+    BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, unsigned int flags);
 };
 
-class MempoolEntryToSql
-{
+class MempoolEntryToSql {
 public:
     MempoolEntryToSql(CTxMemPoolEntry mempool_entry);
+};
+
+class RemoveMempoolEntry {
+public:
+    RemoveMempoolEntry(const uint256 hash, MemPoolRemovalReason reason);
 };
 
 #endif //BLOCK_TO_SQL_H

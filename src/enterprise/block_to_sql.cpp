@@ -14,6 +14,8 @@
 #include <index/txindex.h>
 #include <txmempool.h>
 
+#include <timedata.h>
+
 #include <enterprise/block_to_sql.h>
 #include <enterprise/utilities.h>
 
@@ -21,6 +23,42 @@
 #include <pqxx/pqxx>
 
 using namespace dotenv;
+
+
+RemoveMempoolEntry::RemoveMempoolEntry(const uint256 hash, MemPoolRemovalReason reason) {
+    auto &dotenv = env;
+    dotenv.config();
+
+    std::stringstream connStream;
+    connStream << "dbname = "
+               << dotenv["PGDB"]
+               << " user = "
+               << dotenv["PGUSER"]
+               << " password = "
+               << dotenv["PGPASSWORD"]
+               << " hostaddr = "
+               << dotenv["PGHOST"]
+               << " port = "
+               << dotenv["PGPORT"];
+    pqxx::connection c(connStream.str());
+
+    pqxx::work w(c);
+
+
+    const unsigned int removal_reason = GetMemPoolRemovalReasonEnum(reason);
+    c.prepare("UpdateMempoolEntry", "UPDATE bitcoin.mempool_entries SET "
+                                    "removal_reason = $1, removal_time = $2 WHERE txid = $3;");
+
+    auto r2{w.exec_prepared(
+            "UpdateMempoolEntry",
+            removal_reason,                   // 1 removal_reason
+            GetAdjustedTime(),            // 2 removal_time
+            hash.GetHex()                                     // 3 txid
+
+    )};
+    w.commit();
+
+};
 
 MempoolEntryToSql::MempoolEntryToSql(CTxMemPoolEntry mempool_entry) {
     auto &dotenv = env;

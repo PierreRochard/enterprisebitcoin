@@ -5,6 +5,7 @@
 
 #include <bech32.h>
 #include <hash.h>
+#include <txmempool.h>
 #include <script/script.h>
 #include <uint256.h>
 #include <util/strencodings.h>
@@ -38,6 +39,24 @@ unsigned int GetTxnOutputTypeEnum(TxoutType t) {
             return 9;
         case TxoutType::WITNESS_UNKNOWN:
             return 10;
+    } // no default case, so the compiler can warn about missing cases
+    assert(false);
+}
+
+unsigned int GetMemPoolRemovalReasonEnum(MemPoolRemovalReason r) {
+    switch (r) {
+        case MemPoolRemovalReason::EXPIRY:
+            return 1;
+        case MemPoolRemovalReason::SIZELIMIT:
+            return 2;
+        case MemPoolRemovalReason::REORG:
+            return 3;
+        case MemPoolRemovalReason::BLOCK:
+            return 4;
+        case MemPoolRemovalReason::CONFLICT:
+            return 5;
+        case MemPoolRemovalReason::REPLACED:
+            return 6;
     } // no default case, so the compiler can warn about missing cases
     assert(false);
 }

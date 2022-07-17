@@ -83,5 +83,8 @@ CREATE TABLE bitcoin.mempool_entries
     ancestors_count      BIGINT,
     ancestors_size       BIGINT,
     ancestors_fees       BIGINT,
-    ancestors_sigop_cost BIGINT
+    ancestors_sigop_cost BIGINT,
+
+    removal_reason       TEXT,
+    removal_time         timestamp with time zone
 );
