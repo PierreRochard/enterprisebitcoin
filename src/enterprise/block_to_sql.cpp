@@ -48,12 +48,12 @@ RemoveMempoolEntry::RemoveMempoolEntry(const uint256 hash, MemPoolRemovalReason 
     const unsigned int removal_reason = GetMemPoolRemovalReasonEnum(reason);
     c.prepare("UpdateMempoolEntry", "UPDATE bitcoin.mempool_entries SET "
                                     "removal_reason = $1, removal_time = $2 WHERE txid = $3;");
-
+    int removal_time = std::chrono::seconds{GetAdjustedTime()}.count();
     auto r2{w.exec_prepared(
             "UpdateMempoolEntry",
-            removal_reason,                   // 1 removal_reason
-            GetAdjustedTime(),            // 2 removal_time
-            hash.GetHex()                                     // 3 txid
+            removal_reason,                                     // 1 removal_reason
+            removal_time,            // 2 removal_time
+            hash.GetHex()                                       // 3 txid
 
     )};
     w.commit();
