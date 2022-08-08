@@ -492,7 +492,6 @@ void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, setEntries &setAnces
     // all the appropriate checks.
     indexed_transaction_set::iterator newit = mapTx.insert(entry).first;
 
-    MempoolEntryToSql mempool_entry_to_sql(entry);
     // Update transaction for any feeDelta created by PrioritiseTransaction
     // TODO: refactor so that the fee delta is calculated before inserting
     // into mapTx.
@@ -536,6 +535,7 @@ void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, setEntries &setAnces
 
     vTxHashes.emplace_back(tx.GetWitnessHash(), newit);
     newit->vTxHashesIdx = vTxHashes.size() - 1;
+    MempoolEntryToSql mempool_entry_to_sql(entry);
 }
 
 void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
