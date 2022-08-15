@@ -7,6 +7,7 @@ DROP TABLE IF EXISTS bitcoin.blocks CASCADE;
 CREATE TABLE bitcoin.blocks
 (
     hash                               TEXT PRIMARY KEY,
+    network                            TEXT,
     hash_prev_block                    TEXT,
     merkle_root                        TEXT,
     time                               timestamp with time zone,
@@ -61,6 +62,7 @@ DROP TABLE IF EXISTS bitcoin.mempool_families CASCADE;
 CREATE TABLE bitcoin.mempool_entries
 (
     txid                 TEXT PRIMARY KEY,
+    network              TEXT,
     wtxid                TEXT,
     fee                  BIGINT,
     weight               BIGINT,

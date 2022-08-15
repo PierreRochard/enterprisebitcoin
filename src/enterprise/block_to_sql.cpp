@@ -25,6 +25,15 @@
 using namespace dotenv;
 
 
+std::string ChainToString()
+{
+    if (gArgs.GetChainName() == CBaseChainParams::TESTNET) return " testnet";
+    if (gArgs.GetChainName() == CBaseChainParams::SIGNET) return " signet";
+    if (gArgs.GetChainName() == CBaseChainParams::REGTEST) return " regtest";
+    return "";
+}
+
+
 RemoveMempoolEntry::RemoveMempoolEntry(const uint256 hash, MemPoolRemovalReason reason) {
     auto &dotenv = env;
     dotenv.config();
@@ -85,6 +94,7 @@ MempoolEntryToSql::MempoolEntryToSql(CTxMemPoolEntry mempool_entry) {
     c.prepare("InsertMempoolEntry", "INSERT INTO bitcoin.mempool_entries "
                                     "("
                                     "txid, "
+                                    "network, "
                                     "wtxid, "
                                     "fee, "
                                     "weight, "
@@ -116,30 +126,32 @@ MempoolEntryToSql::MempoolEntryToSql(CTxMemPoolEntry mempool_entry) {
                                     "$2, "
                                     "$3, "
                                     "$4, "
-
                                     "$5, "
-                                    "to_timestamp($6), "
 
-                                    "$7, "
+                                    "$6, "
+                                    "to_timestamp($7), "
+
                                     "$8, "
                                     "$9, "
-
                                     "$10, "
-                                    "to_timestamp($11), "
 
-                                    "$12, "
+                                    "$11, "
+                                    "to_timestamp($12), "
+
                                     "$13, "
                                     "$14, "
-
                                     "$15, "
+
                                     "$16, "
                                     "$17, "
-                                    "$18 "
+                                    "$18, "
+                                    "$19 "
                                     ") ON CONFLICT (txid) DO NOTHING;");
 
     auto r2{w.exec_prepared(
             "InsertMempoolEntry",
             mempool_entry.GetTx().GetHash().GetHex(),                   // 1 txid
+            ChainToString(),                                            // 2 network
             mempool_entry.GetTx().GetWitnessHash().GetHex(),            // 2 wtxid
             mempool_entry.GetFee(),                                     // 3 fee
             mempool_entry.GetTxWeight(),                                // 4 weight
@@ -462,7 +474,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "outputs_total_size, "
                              "inputs_total_size, "
                              "net_utxo_size_impact, "
-                             "hash_prev_block"
+                             "hash_prev_block, "
+                             "network"
                              ") "
 
                              "VALUES "
@@ -502,7 +515,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "$33, "
                              "$34, "
                              "$35, "
-                             "$36"
+                             "$36, "
+                             "$37"
                              ") ON CONFLICT (hash) DO NOTHING;");
 
     auto r2{w.exec_prepared(
@@ -552,7 +566,9 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             block_outputs_total_size,
             block_inputs_total_size,
             block_net_utxo_size_impact,
-            block.GetBlockHeader().hashPrevBlock.ToString()
+            block.GetBlockHeader().hashPrevBlock.ToString(),
+
+            ChainToString()                                            // network
 
     )};
     w.commit();
