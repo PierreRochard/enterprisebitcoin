@@ -25,12 +25,30 @@
 using namespace dotenv;
 
 
-std::string ChainToString()
-{
-    if (gArgs.GetChainName() == CBaseChainParams::TESTNET) return " testnet";
-    if (gArgs.GetChainName() == CBaseChainParams::SIGNET) return " signet";
-    if (gArgs.GetChainName() == CBaseChainParams::REGTEST) return " regtest";
-    return "";
+std::string ChainToString() {
+    if (gArgs.GetChainName() == CBaseChainParams::MAIN) return "mainnet";
+    if (gArgs.GetChainName() == CBaseChainParams::TESTNET) return "testnet";
+    if (gArgs.GetChainName() == CBaseChainParams::SIGNET) return "signet";
+    if (gArgs.GetChainName() == CBaseChainParams::REGTEST) return "regtest";
+    return "unknown";
+}
+
+std::string GetMemPoolRemovalReasonString(MemPoolRemovalReason r) {
+    switch (r) {
+        case MemPoolRemovalReason::EXPIRY:
+            return "expiry";
+        case MemPoolRemovalReason::SIZELIMIT:
+            return "size_limit";
+        case MemPoolRemovalReason::REORG:
+            return "reorg";
+        case MemPoolRemovalReason::BLOCK:
+            return "block";
+        case MemPoolRemovalReason::CONFLICT:
+            return "conflict";
+        case MemPoolRemovalReason::REPLACED:
+            return "replaced";
+    } // no default case, so the compiler can warn about missing cases
+    assert(false);
 }
 
 
@@ -54,17 +72,19 @@ RemoveMempoolEntry::RemoveMempoolEntry(const uint256 hash, MemPoolRemovalReason 
     pqxx::work w(c);
 
 
-    const unsigned int removal_reason = GetMemPoolRemovalReasonEnum(reason);
+    std::string removal_reason = GetMemPoolRemovalReasonString(reason);
     c.prepare("UpdateMempoolEntry", "UPDATE bitcoin.mempool_entries SET "
                                     "removal_reason = $1, "
-                                    "removal_time = to_timestamp($2) "
-                                    "WHERE txid = $3;");
+                                    "removal_time = to_timestamp($2), "
+                                    "network = $3 "
+                                    "WHERE txid = $4;");
     int removal_time = std::chrono::seconds{GetAdjustedTime()}.count();
     auto r2{w.exec_prepared(
             "UpdateMempoolEntry",
-            removal_reason,                                     // 1 removal_reason
-            removal_time,            // 2 removal_time
-            hash.GetHex()                                       // 3 txid
+            removal_reason,            // 1 removal_reason
+            removal_time,              // 2 removal_time
+            ChainToString(),              // 3 network
+            hash.GetHex()              // 4 txid
 
     )};
     w.commit();
@@ -151,7 +171,7 @@ MempoolEntryToSql::MempoolEntryToSql(CTxMemPoolEntry mempool_entry) {
     auto r2{w.exec_prepared(
             "InsertMempoolEntry",
             mempool_entry.GetTx().GetHash().GetHex(),                   // 1 txid
-            ChainToString(),                                            // 2 network
+            ChainToString(),                                               // 2 network
             mempool_entry.GetTx().GetWitnessHash().GetHex(),            // 2 wtxid
             mempool_entry.GetFee(),                                     // 3 fee
             mempool_entry.GetTxWeight(),                                // 4 weight
@@ -207,7 +227,28 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
     std::map<unsigned int, std::array<uint64_t, 4>> output_script_types;
     std::map<unsigned int, std::array<uint64_t, 6>> input_script_types;
 
-    unsigned int segwit_spend_count = 0;
+    unsigned int nonstandard_create_count = 0;
+    unsigned int pubkey_create_count = 0;
+    unsigned int pubkeyhash_create_count = 0;
+    unsigned int scripthash_create_count = 0;
+    unsigned int multisig_create_count = 0;
+    unsigned int null_data_create_count = 0;
+    unsigned int witness_v0_keyhash_create_count = 0;
+    unsigned int witness_v0_scripthash_create_count = 0;
+    unsigned int witness_v1_taproot_create_count = 0;
+    unsigned int witness_unknown_create_count = 0;
+
+    unsigned int nonstandard_spend_count = 0;
+    unsigned int pubkey_spend_count = 0;
+    unsigned int pubkeyhash_spend_count = 0;
+    unsigned int scripthash_spend_count = 0;
+    unsigned int multisig_spend_count = 0;
+    unsigned int null_data_spend_count = 0;
+    unsigned int witness_v0_keyhash_spend_count = 0;
+    unsigned int witness_v0_scripthash_spend_count = 0;
+    unsigned int witness_v1_taproot_spend_count = 0;
+    unsigned int witness_unknown_spend_count = 0;
+
     unsigned int outputs_count = 0;
     unsigned int inputs_count = 0;
     CAmount total_output_value = 0;
@@ -257,6 +298,40 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
 
             std::vector <std::vector<unsigned char>> solutions_data;
             TxoutType which_type = Solver(txout_data.scriptPubKey, solutions_data);
+
+            switch (which_type) {
+                case TxoutType::NONSTANDARD:
+                    nonstandard_create_count += 1;
+                    break;
+                case TxoutType::PUBKEY:
+                    pubkey_create_count += 1;
+                    break;
+                case TxoutType::PUBKEYHASH:
+                    pubkeyhash_create_count += 1;
+                    break;
+                case TxoutType::SCRIPTHASH:
+                    scripthash_create_count += 1;
+                    break;
+                case TxoutType::MULTISIG:
+                    multisig_create_count += 1;
+                    break;
+                case TxoutType::NULL_DATA:
+                    null_data_create_count += 1;
+                    break;
+                case TxoutType::WITNESS_V0_KEYHASH:
+                    witness_v0_keyhash_create_count += 1;
+                    break;
+                case TxoutType::WITNESS_V0_SCRIPTHASH:
+                    witness_v0_scripthash_create_count += 1;
+                    break;
+                case TxoutType::WITNESS_V1_TAPROOT:
+                    witness_v1_taproot_create_count += 1;
+                    break;
+                case TxoutType::WITNESS_UNKNOWN:
+                    witness_unknown_create_count += 1;
+                    break;
+            }
+
             const unsigned int script_type = GetTxnOutputTypeEnum(which_type);
             output_script_types[script_type][0] += 1;
             output_script_types[script_type][1] += output_size;
@@ -326,6 +401,40 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
 
             std::vector <std::vector<unsigned char>> solutions_data;
             TxoutType which_type = Solver(spent_output_data.scriptPubKey, solutions_data);
+
+            switch (which_type) {
+                case TxoutType::NONSTANDARD:
+                    nonstandard_spend_count += 1;
+                    break;
+                case TxoutType::PUBKEY:
+                    pubkey_spend_count += 1;
+                    break;
+                case TxoutType::PUBKEYHASH:
+                    pubkeyhash_spend_count += 1;
+                    break;
+                case TxoutType::SCRIPTHASH:
+                    scripthash_spend_count += 1;
+                    break;
+                case TxoutType::MULTISIG:
+                    multisig_spend_count += 1;
+                    break;
+                case TxoutType::NULL_DATA:
+                    null_data_spend_count += 1;
+                    break;
+                case TxoutType::WITNESS_V0_KEYHASH:
+                    witness_v0_keyhash_spend_count += 1;
+                    break;
+                case TxoutType::WITNESS_V0_SCRIPTHASH:
+                    witness_v0_scripthash_spend_count += 1;
+                    break;
+                case TxoutType::WITNESS_V1_TAPROOT:
+                    witness_v1_taproot_spend_count += 1;
+                    break;
+                case TxoutType::WITNESS_UNKNOWN:
+                    witness_unknown_spend_count += 1;
+                    break;
+            }
+
             const unsigned int spent_script_type = GetTxnOutputTypeEnum(which_type);
 
             uint64_t input_size = GetSerializeSize(txin_data, PROTOCOL_VERSION);
@@ -352,7 +461,6 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             }
         }
 
-        segwit_spend_count += transaction_data.is_segwit_out_spend;
         outputs_count += transaction_data.m_transaction->vout.size();
         inputs_count += transaction_data.m_transaction->vin.size();
         total_output_value += transaction_data.total_output_value;
@@ -445,10 +553,9 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "difficulty, "
 
                              "chain_work, "
-                             "segwit_spend_count, "
                              "outputs_count, "
-
                              "inputs_count, "
+
                              "total_output_value, "
                              "total_input_value, "
                              "total_fees, "
@@ -465,7 +572,6 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "output_script_types, "
                              "input_script_types, "
 
-
                              "output_legacy_signature_operations, "
                              "input_legacy_signature_operations, "
                              "input_p2sh_signature_operations, "
@@ -474,50 +580,107 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "outputs_total_size, "
                              "inputs_total_size, "
                              "net_utxo_size_impact, "
+
                              "hash_prev_block, "
-                             "network"
+                             "network, "
+
+                             "nonstandard_create_count           , "
+                             "pubkey_create_count                , "
+                             "pubkeyhash_create_count            , "
+                             "scripthash_create_count            , "
+                             "multisig_create_count              , "
+                             "null_data_create_count             , "
+                             "witness_v0_keyhash_create_count    , "
+                             "witness_v0_scripthash_create_count , "
+                             "witness_v1_taproot_create_count    , "
+                             "witness_unknown_create_count       , "
+
+                             "nonstandard_spend_count            , "
+                             "pubkey_spend_count                 , "
+                             "pubkeyhash_spend_count             , "
+                             "scripthash_spend_count             , "
+                             "multisig_spend_count               , "
+                             "null_data_spend_count              , "
+                             "witness_v0_keyhash_spend_count     , "
+                             "witness_v0_scripthash_spend_count  , "
+                             "witness_v1_taproot_spend_count     , "
+                             "witness_unknown_spend_count"
+
                              ") "
 
                              "VALUES "
                              "("
-                             "$1, "
-                             "$2, "
-                             "to_timestamp($3), "
-                             "to_timestamp($4), "
-                             "$5, "
-                             "$6, "
-                             "$7, "
-                             "$8, "
-                             "$9, "
-                             "$10, "
-                             "$11, "
-                             "$12, "
-                             "$13, "
-                             "$14, "
-                             "$15, "
-                             "$16, "
-                             "$17, "
-                             "$18, "
-                             "$19, "
-                             "$20, "
-                             "$21, "
-                             "$22, "
-                             "$23, "
-                             "$24, "
-                             "$25, "
-                             "$26, "
-                             "$27, "
-                             "$28, "
-                             "$29, "
-                             "$30, "
-                             "$31, "
-                             "$32, "
-                             "$33, "
-                             "$34, "
-                             "$35, "
-                             "$36, "
-                             "$37"
-                             ") ON CONFLICT (hash) DO NOTHING;");
+                             "$1, " // hash
+                             "$2, " // merkle_root
+                             "to_timestamp($3), " // time
+
+                             "to_timestamp($4), " // median_time
+                             "$5, " // height
+                             "$6, " // subsidy
+
+                             "$7, " // transactions_count
+                             "$8, " // version
+                             "$9, " // status
+
+                             "$10, " // bits
+                             "$11, " // nonce
+                             "$12, " // difficulty
+
+                             "$13, " // chain_work
+                             "$14, " // outputs_count
+                             "$15, " // inputs_count
+
+                             "$16, " // total_output_value
+                             "$17, " // total_input_value
+                             "$18, " // total_fees
+
+                             "$19, " // total_size
+                             "$20, " // total_vsize
+                             "$21, " // total_weight
+
+                             "$22, " // fee_rates
+                             "$23, " // output_data
+                             "$24, " // input_data
+
+                             "$25, " // transaction_data
+                             "$26, " // output_script_types
+                             "$27, " // input_script_types
+
+                             "$28, " // output_legacy_signature_operations
+                             "$29, " // input_legacy_signature_operations
+                             "$30, " // input_p2sh_signature_operations
+                             "$31, " // input_witness_signature_operations
+
+                             "$32, " // outputs_total_size
+                             "$33, " // inputs_total_size
+                             "$34, " // net_utxo_size_impact
+
+                             "$35, " // hash_prev_block
+                             "$36, "   // network
+
+                             "$37, " // nonstandard_create_count
+                             "$38, " // pubkey_create_count
+                             "$39, " // pubkeyhash_create_count
+                             "$40, " // scripthash_create_count
+                             "$41, " // multisig_create_count
+                             "$42, " // null_data_create_count
+                             "$43, " // witness_v0_keyhash_create_count
+                             "$44, " // witness_v0_scripthash_create_count
+                             "$45, " // witness_v1_taproot_create_count
+                             "$46, " // witness_unknown_create_count
+
+                             "$47, " // nonstandard_spend_count
+                             "$48, " // pubkey_spend_count
+                             "$49, " // pubkeyhash_spend_count
+                             "$50, " // scripthash_spend_count
+                             "$51, " // multisig_spend_count
+                             "$52, " // null_data_spend_count
+                             "$53, " // witness_v0_keyhash_spend_count
+                             "$54, " // witness_v0_scripthash_spend_count
+                             "$55, " // witness_v1_taproot_spend_count
+                             "$56 " // witness_unknown_spend_count
+                             ") ON CONFLICT (hash) DO NOTHING;"
+    );
 
     auto r2{w.exec_prepared(
             "InsertBlock",
@@ -538,7 +701,6 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             GetDifficulty(block_index),         // difficulty
 
             block_index->nChainWork.GetHex(),      // chain_work
-            segwit_spend_count,
             outputs_count,
 
             inputs_count,
@@ -568,8 +730,28 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             block_net_utxo_size_impact,
             block.GetBlockHeader().hashPrevBlock.ToString(),
 
-            ChainToString()                                            // network
+            ChainToString(),                                        // network
+            nonstandard_create_count,
+            pubkey_create_count,
+            pubkeyhash_create_count,
+            scripthash_create_count,
+            multisig_create_count,
+            null_data_create_count,
+            witness_v0_keyhash_create_count,
+            witness_v0_scripthash_create_count,
+            witness_v1_taproot_create_count,
+            witness_unknown_create_count,
 
+            nonstandard_spend_count,
+            pubkey_spend_count,
+            pubkeyhash_spend_count,
+            scripthash_spend_count,
+            multisig_spend_count,
+            null_data_spend_count,
+            witness_v0_keyhash_spend_count,
+            witness_v0_scripthash_spend_count,
+            witness_v1_taproot_spend_count,
+            witness_unknown_spend_count
     )};
     w.commit();
 
@@ -582,5 +764,4 @@ TransactionData::TransactionData(const int &transaction_index, const CTransactio
     is_coinbase = transaction->IsCoinBase();
     weight = GetTransactionWeight(*transaction);
     vsize = GetVirtualTransactionSize(*transaction);
-    is_segwit_out_spend = is_coinbase ? false : !(transaction->GetHash() == transaction->GetWitnessHash());
 };

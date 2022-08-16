@@ -26,7 +26,6 @@ struct TransactionData {
     int64_t utxo_size_inc = 0;
     unsigned int weight;
     unsigned int vsize;
-    bool is_segwit_out_spend;
 
     std::string transaction_hash;
     bool is_coinbase;
