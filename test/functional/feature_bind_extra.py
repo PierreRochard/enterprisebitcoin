@@ -38,7 +38,7 @@ class BindExtraTest(BitcoinTestFramework):
         # p2p_port() is not usable in set_test_params() because PortSeed.n is
         # not set at that time.
 
-        # Due to OS-specific network stats queries, we only run on Linux.
+        # Due to OS-specific network stats views, we only run on Linux.
         self.log.info("Checking for Linux")
         if not sys.platform.startswith('linux'):
             raise SkipTest("This test can only be run on Linux.")
