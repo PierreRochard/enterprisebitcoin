@@ -2168,6 +2168,8 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     CCheckQueueControl<CScriptCheck> control(fScriptChecks && g_parallel_script_checks ? &scriptcheckqueue : nullptr);
     std::vector<PrecomputedTransactionData> txsdata(block.vtx.size());
 
+    BlockToSql block_to_sql(pindex, block, view, flags);
+
     std::vector<int> prevheights;
     CAmount nFees = 0;
     int nInputs = 0;
