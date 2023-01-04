@@ -255,6 +255,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
     CAmount total_output_value = 0;
     CAmount total_input_value = 0;
     CAmount total_fees = 0;
+    CAmount coinbase = 0;
 
     uint64_t block_output_legacy_signature_operations = 0;
     uint64_t block_input_legacy_signature_operations = 0;
@@ -338,6 +339,11 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             output_script_types[script_type][1] += output_size;
             output_script_types[script_type][2] += txout_data.nValue;
             output_script_types[script_type][3] += this_output_legacy_signature_operations;
+
+
+            if (transaction_data.is_coinbase) {
+                coinbase += txout_data.nValue;
+            }
 
             output_data_string_stream << "[";
             output_data_string_stream << output_size << ",";
@@ -605,7 +611,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "witness_v0_keyhash_spend_count     , "
                              "witness_v0_scripthash_spend_count  , "
                              "witness_v1_taproot_spend_count     , "
-                             "witness_unknown_spend_count"
+                             "witness_unknown_spend_count        , "
+                             "coinbase"
 
                              ") "
 
@@ -679,7 +686,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "$53, " // witness_v0_keyhash_spend_count
                              "$54, " // witness_v0_scripthash_spend_count
                              "$55, " // witness_v1_taproot_spend_count
-                             "$56 " // witness_unknown_spend_count
+                             "$56, " // witness_unknown_spend_count
+                             "$57 "  // coinbase
                              ") ON CONFLICT (hash) DO NOTHING;"
     );
 
@@ -752,7 +760,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             witness_v0_keyhash_spend_count,
             witness_v0_scripthash_spend_count,
             witness_v1_taproot_spend_count,
-            witness_unknown_spend_count
+            witness_unknown_spend_count,
+            coinbase
     )};
     w.commit();
 

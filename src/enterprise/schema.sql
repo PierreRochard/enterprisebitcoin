@@ -73,7 +73,8 @@ CREATE TABLE bitcoin.blocks
 
     outputs_total_size                 BIGINT,
     inputs_total_size                  BIGINT,
-    net_utxo_size_impact               BIGINT
+    net_utxo_size_impact               BIGINT,
+    coinbase                           BIGINT
 );
 
 DROP TABLE IF EXISTS bitcoin.mempool_entries CASCADE;
