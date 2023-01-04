@@ -764,6 +764,14 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             coinbase
     )};
     w.commit();
+// Todo:  Stream [height, median_time, txid:vector, address, script_type, debit, credit] into a table
+//    pqxx::stream_to stream{
+//            tx,
+//            "score",
+//            std::vector<std::string>{"name", "points"}};
+//    for (auto const &entry: scores)
+//        stream << entry;
+//    stream.complete();
 
 }
 
