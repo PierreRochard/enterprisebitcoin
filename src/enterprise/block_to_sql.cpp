@@ -2,6 +2,7 @@
 #include <chainparams.h>
 #include <consensus/validation.h>
 #include <core_io.h>
+#include <key_io.h>
 #include <logging.h>
 #include <pubkey.h>
 #include <primitives/block.h>
@@ -276,6 +277,27 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
     std::ostringstream transaction_data_string_stream;
     transaction_data_string_stream << "[";
 
+    std::ostringstream addresses_string_stream;
+    addresses_string_stream << "network, "
+
+                               "input_height, "
+                               "input_median_time, "
+                               "input_txid, "
+                               "input_wtxid, "
+                               "input_vector, "
+                               "input_size, "
+
+                               "output_height, "
+                               "output_median_time, "
+                               "output_txid, "
+                               "output_wtxid, "
+                               "output_vector, "
+                               "output_size, "
+                               "output_script_type, "
+
+                               "address, "
+                               "amount\n";
+
     for (std::size_t transaction_index = 0; transaction_index < block.vtx.size(); ++transaction_index) {
         const CTransactionRef &transaction = block.vtx[transaction_index];
 
@@ -285,9 +307,6 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
         for (std::size_t output_vector = 0; output_vector < transaction->vout.size(); ++output_vector) {
             const CTxOut &txout_data = transaction->vout[output_vector];
             int64_t output_size = GetSerializeSize(txout_data, PROTOCOL_VERSION);
-            if (output_size > 300) {
-                LogPrintf("\n");
-            }
             block_outputs_total_size += output_size;
             int64_t utxo_size = output_size + PER_UTXO_OVERHEAD;
             int64_t this_output_legacy_signature_operations =
@@ -354,6 +373,34 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             if (transaction_index != block.vtx.size() - 1 || output_vector != transaction->vout.size() - 1) {
                 output_data_string_stream << ",";
             }
+
+            CTxDestination address;
+            std::string address_string = "no-address";
+            bool has_address = ExtractDestination(txout_data.scriptPubKey, address);
+            if (has_address) {
+                address_string = EncodeDestination(address);
+            };
+
+            addresses_string_stream << ChainToString() << ","; // network
+
+            addresses_string_stream << ","; // input_height
+            addresses_string_stream << ","; // input_median_time
+            addresses_string_stream << ","; // input_txid
+            addresses_string_stream << ","; // input_wtxid
+            addresses_string_stream << ","; // input_vector
+            addresses_string_stream << ","; // input_size
+
+            addresses_string_stream << block_index->nHeight << ","; // output_height
+            addresses_string_stream << block_index->GetMedianTimePast() << ","; // output_median_time
+            addresses_string_stream << transaction->GetHash().GetHex() << ","; // output_txid
+            addresses_string_stream << transaction->GetWitnessHash().GetHex() << ","; // output_wtxid
+            addresses_string_stream << output_vector << ","; // output_vector
+            addresses_string_stream << output_size << ","; // output_size
+            addresses_string_stream << script_type << ","; // output_script_type
+
+            addresses_string_stream << address_string << ","; // address
+            addresses_string_stream << txout_data.nValue << "\n"; // amount
+
         }
 
         //        Inputs
@@ -466,6 +513,33 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             if (transaction_index != block.vtx.size() - 1 || input_vector != transaction->vin.size() - 1) {
                 input_data_string_stream << ",";
             }
+
+            CTxDestination address;
+            std::string address_string = "no-address";
+            bool has_address = ExtractDestination(spent_output_data.scriptPubKey, address);
+            if (has_address) {
+                address_string = EncodeDestination(address);
+            };
+
+            addresses_string_stream << ChainToString() << ","; // network
+
+            addresses_string_stream << block_index->nHeight << ","; // input_height
+            addresses_string_stream << block_index->GetMedianTimePast() << ","; // input_median_time
+            addresses_string_stream << transaction->GetHash().GetHex() << ","; // input_txid
+            addresses_string_stream << transaction->GetWitnessHash().GetHex() << ","; // input_wtxid
+            addresses_string_stream << input_vector << ","; // input_vector
+            addresses_string_stream << input_size << ","; // input_size
+
+            addresses_string_stream << coin.nHeight << ","; // output_height
+            addresses_string_stream << ","; // output_median_time
+            addresses_string_stream << txin_data.prevout.hash.GetHex() << ","; // output_txid
+            addresses_string_stream << ","; // output_wtxid
+            addresses_string_stream << txin_data.prevout.n << ","; // output_vector
+            addresses_string_stream << spent_output_size << ","; // output_size
+            addresses_string_stream << spent_script_type << ","; // output_script_type
+
+            addresses_string_stream << address_string << ","; // address
+            addresses_string_stream << -spent_output_data.nValue << "\n"; // value
         }
 
         outputs_count += transaction_data.m_transaction->vout.size();
@@ -764,6 +838,14 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             coinbase
     )};
     w.commit();
+
+//    Write addresses_string_stream to a file
+    std::ofstream addresses_file;
+    addresses_file.open("addresses/" + std::to_string(block_index->nHeight) + ".csv");
+    addresses_file << addresses_string_stream.str();
+    addresses_file.close();
+
+
 // Todo:  Stream [height, median_time, txid:vector, address, script_type, debit, credit] into a table
 //    pqxx::stream_to stream{
 //            tx,
