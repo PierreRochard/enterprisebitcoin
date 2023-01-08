@@ -839,9 +839,11 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
     )};
     w.commit();
 
+    fs::create_directories("addresses/" + std::to_string(block_index->nHeight/10000));
+
 //    Write addresses_string_stream to a file
     std::ofstream addresses_file;
-    addresses_file.open("addresses/" + std::to_string(block_index->nHeight) + ".csv");
+    addresses_file.open("addresses/" + std::to_string(block_index->nHeight/10000) + "/" + std::to_string(block_index->nHeight) + ".csv");
     addresses_file << addresses_string_stream.str();
     addresses_file.close();
 
