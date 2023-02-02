@@ -491,11 +491,14 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
 
             const unsigned int spent_script_type = GetTxnOutputTypeEnum(which_type);
 
-            uint64_t input_size = GetSerializeSize(txin_data, PROTOCOL_VERSION);
+            uint64_t input_size = GetSerializeSize(txin_data, PROTOCOL_VERSION) +
+                                  GetSerializeSize(txin_data.scriptWitness.stack, PROTOCOL_VERSION);
+            uint64_t input_weight = GetTransactionInputWeight(txin_data);
+
             block_inputs_total_size += input_size;
 
             input_script_types[spent_script_type][0] += 1;
-            input_script_types[spent_script_type][1] += GetTransactionInputWeight(txin_data);
+            input_script_types[spent_script_type][1] += input_weight;
             input_script_types[spent_script_type][2] += input_size;
             input_script_types[spent_script_type][3] += spent_output_size;
             input_script_types[spent_script_type][4] += spent_output_data.nValue;
@@ -504,7 +507,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             input_script_types[spent_script_type][5] += this_input_witness_signature_operations;
 
             input_data_string_stream << "[";
-            input_data_string_stream << GetTransactionInputWeight(txin_data) << ",";
+            input_data_string_stream << input_weight << ",";
             input_data_string_stream << input_size << ",";
             input_data_string_stream << spent_output_size << ",";
             input_data_string_stream << spent_output_data.nValue << ",";
@@ -839,11 +842,13 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
     )};
     w.commit();
 
-    fs::create_directories("addresses/" + std::to_string(block_index->nHeight/10000));
+    fs::create_directories("addresses/" + std::to_string(block_index->nHeight / 10000));
 
 //    Write addresses_string_stream to a file
     std::ofstream addresses_file;
-    addresses_file.open("addresses/" + std::to_string(block_index->nHeight/10000) + "/" + std::to_string(block_index->nHeight) + ".csv");
+    addresses_file.open(
+            "addresses/" + std::to_string(block_index->nHeight / 10000) + "/" + std::to_string(block_index->nHeight) +
+            ".csv");
     addresses_file << addresses_string_stream.str();
     addresses_file.close();
 
