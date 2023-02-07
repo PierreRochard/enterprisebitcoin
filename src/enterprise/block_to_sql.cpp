@@ -495,6 +495,37 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                                   GetSerializeSize(txin_data.scriptWitness.stack, PROTOCOL_VERSION);
             uint64_t input_weight = GetTransactionInputWeight(txin_data);
 
+            typedef std::vector<unsigned char> valtype;
+            valtype vchPushValue;
+            CScript::const_iterator pc = txin_data.scriptSig.begin();
+            CScript::const_iterator pend = txin_data.scriptSig.end();
+            bool luke_inscription_filter = false;
+            bool the_stack_filter = false;
+            opcodetype opcode;
+            uint32_t opcode_pos = 0;
+            for (; pc < pend; ++opcode_pos) {
+                txin_data.scriptSig.GetOp(pc, opcode, vchPushValue);
+                if (opcode == OP_FALSE) {
+                    auto pc_tmp = pc;
+                    opcodetype next_opcode;
+                    valtype dummy_data;
+                    if (txin_data.scriptSig.GetOp(pc_tmp, next_opcode, dummy_data) && next_opcode == OP_IF) {
+                        luke_inscription_filter = true;
+                        break;
+                    }
+                }
+            };
+
+            for (; pc < pend; ++opcode_pos) {
+                txin_data.scriptSig.GetOp(pc, opcode, vchPushValue);
+                const valtype ord_prefix{OP_FALSE, OP_IF, 0x03, 'o', 'r', 'd'};
+                if (opcode == ord_prefix[0] &&
+                    std::mismatch(ord_prefix.begin()+1, ord_prefix.end(), pc, pend).first == ord_prefix.end()) {
+                    the_stack_filter = true;
+                    break;
+                }
+            };
+
             block_inputs_total_size += input_size;
 
             input_script_types[spent_script_type][0] += 1;
@@ -511,7 +542,10 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             input_data_string_stream << input_size << ",";
             input_data_string_stream << spent_output_size << ",";
             input_data_string_stream << spent_output_data.nValue << ",";
-            input_data_string_stream << spent_script_type;
+            input_data_string_stream << spent_script_type << ",";
+            input_data_string_stream << luke_inscription_filter << ",";
+            input_data_string_stream << the_stack_filter;
+
             input_data_string_stream << "]";
             if (transaction_index != block.vtx.size() - 1 || input_vector != transaction->vin.size() - 1) {
                 input_data_string_stream << ",";
@@ -542,7 +576,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             addresses_string_stream << spent_script_type << ","; // output_script_type
 
             addresses_string_stream << address_string << ","; // address
-            addresses_string_stream << -spent_output_data.nValue << "\n"; // value
+            addresses_string_stream << -spent_output_data.nValue << "\n"; // amount
         }
 
         outputs_count += transaction_data.m_transaction->vout.size();
