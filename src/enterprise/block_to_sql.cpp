@@ -495,45 +495,52 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                                   GetSerializeSize(txin_data.scriptWitness.stack, PROTOCOL_VERSION);
             uint64_t input_weight = GetTransactionInputWeight(txin_data);
 
-            typedef std::vector<unsigned char> valtype;
+            uint64_t luke_inscription_filter = 0;
+            uint64_t the_stack_filter = 0;
+            int witnessversion;
+            std::vector<unsigned char> witnessprogram;
+            if (spent_output_data.scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
 
-            Span stack{txin_data.scriptWitness.stack};
-            const valtype& script_bytes = SpanPopBack(stack);
-            CScript exec_script = CScript(script_bytes.begin(), script_bytes.end());
+                typedef std::vector<unsigned char> valtype;
 
-            CScript::const_iterator pc = exec_script.begin();
-            CScript::const_iterator pend = exec_script.end();
-            bool luke_inscription_filter = false;
-            bool the_stack_filter = false;
-            uint32_t opcode_pos = 0;
-            for (; pc < pend; ++opcode_pos) {
-                opcodetype opcode;
-                valtype vchPushValue;
-                exec_script.GetOp(pc, opcode, vchPushValue);
-                if (opcode == OP_FALSE) {
-                    auto pc_tmp = pc;
-                    opcodetype next_opcode;
-                    valtype dummy_data;
-                    exec_script.GetOp(pc_tmp, next_opcode, dummy_data);
-                    if (next_opcode == OP_IF) {
-                        luke_inscription_filter = true;
-                        break;
+                Span stack{txin_data.scriptWitness.stack};
+                const valtype& script_bytes = SpanPopBack(stack);
+                CScript exec_script = CScript(script_bytes.begin(), script_bytes.end());
+
+                CScript::const_iterator pc = exec_script.begin();
+                CScript::const_iterator pend = exec_script.end();
+                uint32_t opcode_pos = 0;
+                for (; pc < pend; ++opcode_pos) {
+                    opcodetype opcode;
+                    valtype vchPushValue;
+                    exec_script.GetOp(pc, opcode, vchPushValue);
+                    if (opcode == OP_FALSE) {
+                        auto pc_tmp = pc;
+                        opcodetype next_opcode;
+                        valtype dummy_data;
+                        exec_script.GetOp(pc_tmp, next_opcode, dummy_data);
+                        if (next_opcode == OP_IF) {
+                            luke_inscription_filter = 1;
+                            break;
+                        }
                     }
-                }
+                };
+
+                opcode_pos = 0;
+                for (; pc < pend; ++opcode_pos) {
+                    opcodetype opcode;
+                    valtype vchPushValue;
+                    exec_script.GetOp(pc, opcode, vchPushValue);
+                    const valtype ord_prefix{OP_FALSE, OP_IF, 0x03, 'o', 'r', 'd'};
+                    if (opcode == ord_prefix[0] &&
+                        std::mismatch(ord_prefix.begin()+1, ord_prefix.end(), pc, pend).first == ord_prefix.end()) {
+                        the_stack_filter = 1;
+                        break;
+                    };
+                };
             };
 
-            opcode_pos = 0;
-            for (; pc < pend; ++opcode_pos) {
-                opcodetype opcode;
-                valtype vchPushValue;
-                exec_script.GetOp(pc, opcode, vchPushValue);
-                const valtype ord_prefix{OP_FALSE, OP_IF, 0x03, 'o', 'r', 'd'};
-                if (opcode == ord_prefix[0] &&
-                    std::mismatch(ord_prefix.begin()+1, ord_prefix.end(), pc, pend).first == ord_prefix.end()) {
-                    the_stack_filter = true;
-                    break;
-                }
-            };
+
 
             block_inputs_total_size += input_size;
 
