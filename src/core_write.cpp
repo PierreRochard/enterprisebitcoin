@@ -106,8 +106,7 @@ std::string ScriptToAsmStr(const CScript& script, const bool fAttemptSighashDeco
             str += " ";
         }
         if (!script.GetOp(pc, opcode, vch)) {
-            str += "[error]";
-            return str;
+            str += " [error] ";
         }
         if (0 <= opcode && opcode <= OP_PUSHDATA4) {
             if (vch.size() <= static_cast<std::vector<unsigned char>::size_type>(4)) {
