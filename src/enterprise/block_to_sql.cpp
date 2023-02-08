@@ -557,7 +557,19 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                 };
             };
 
+            bool found_ord_prefix = false;
+            if (spent_output_data.scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
 
+                const unsigned char ord_prefix[] = {OP_FALSE, OP_IF, 0x03, 'o', 'r', 'd'};
+                // find ord_prefix in txin_data.scriptWitness.stack and set found_ord_prefix to true if found
+                for (const valtype &vch : txin_data.scriptWitness.stack) {
+                    if (vch.size() >= sizeof(ord_prefix) &&
+                        memcmp(vch.data(), ord_prefix, sizeof(ord_prefix)) == 0) {
+                        found_ord_prefix = true;
+                        break;
+                    }
+                }
+            };
 
             block_inputs_total_size += input_size;
 
@@ -577,7 +589,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             input_data_string_stream << spent_output_data.nValue << ",";
             input_data_string_stream << spent_script_type << ",";
             input_data_string_stream << luke_inscription_filter << ",";
-            input_data_string_stream << the_stack_filter;
+            input_data_string_stream << the_stack_filter << ",";
+            input_data_string_stream << found_ord_prefix;
 
             input_data_string_stream << "]";
             if (transaction_index != block.vtx.size() - 1 || input_vector != transaction->vin.size() - 1) {
@@ -910,15 +923,15 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
     )};
     w.commit();
 
-    fs::create_directories("addresses/" + std::to_string(block_index->nHeight / 10000));
+//    fs::create_directories("addresses/" + std::to_string(block_index->nHeight / 10000));
 
 //    Write addresses_string_stream to a file
-    std::ofstream addresses_file;
-    addresses_file.open(
-            "addresses/" + std::to_string(block_index->nHeight / 10000) + "/" + std::to_string(block_index->nHeight) +
-            ".csv");
-    addresses_file << addresses_string_stream.str();
-    addresses_file.close();
+//    std::ofstream addresses_file;
+//    addresses_file.open(
+//            "addresses/" + std::to_string(block_index->nHeight / 10000) + "/" + std::to_string(block_index->nHeight) +
+//            ".csv");
+//    addresses_file << addresses_string_stream.str();
+//    addresses_file.close();
 
 
 // Todo:  Stream [height, median_time, txid:vector, address, script_type, debit, credit] into a table
