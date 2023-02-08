@@ -495,78 +495,23 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                                   GetSerializeSize(txin_data.scriptWitness.stack, PROTOCOL_VERSION);
             uint64_t input_weight = GetTransactionInputWeight(txin_data);
 
-            typedef std::vector<unsigned char> valtype;
-
-            uint64_t luke_inscription_filter = 0;
 
             int witnessversion;
             std::vector<unsigned char> witnessprogram;
 
-            if (spent_output_data.scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
-                Span stack{txin_data.scriptWitness.stack};
-                const valtype& script_bytes = SpanPopBack(stack);
-                CScript exec_script = CScript(script_bytes.begin(), script_bytes.end());
-
-                CScript::const_iterator pc = exec_script.begin();
-                CScript::const_iterator pend = exec_script.end();
-                uint32_t opcode_pos = 0;
-                for (; pc < pend; ++opcode_pos) {
-                    opcodetype opcode;
-                    valtype vchPushValue;
-                    exec_script.GetOp(pc, opcode, vchPushValue);
-                    if (opcode == OP_FALSE) {
-                        auto pc_tmp = pc;
-                        opcodetype next_opcode;
-                        valtype dummy_data;
-                        exec_script.GetOp(pc_tmp, next_opcode, dummy_data);
-                        if (next_opcode == OP_IF) {
-                            luke_inscription_filter = 1;
-                            break;
-                        }
-                    }
-                };
-            };
-
-            uint64_t the_stack_filter = 0;
-            if (spent_output_data.scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
-
-                Span stack{txin_data.scriptWitness.stack};
-
-                const valtype& script_bytes = SpanPopBack(stack);
-
-                CScript exec_script = CScript(script_bytes.begin(), script_bytes.end());
-
-                CScript::const_iterator pc = exec_script.begin();
-                CScript::const_iterator pend = exec_script.end();
-                uint32_t opcode_pos = 0;
-                for (; pc < pend; ++opcode_pos) {
-                    opcodetype opcode;
-                    valtype vchPushValue;
-                    exec_script.GetOp(pc, opcode, vchPushValue);
-                    const valtype ord_prefix{OP_FALSE, OP_IF, 0x03, 'o', 'r', 'd'};
-                    if (opcode == ord_prefix[0] &&
-                        std::mismatch(
-                                ord_prefix.begin()+1,
-                                ord_prefix.end(),
-                                pc,
-                                pend
-                                ).first == ord_prefix.end()) {
-                        the_stack_filter = 1;
-                        break;
-                    };
-                };
-            };
 
             bool found_ord_prefix = false;
             if (spent_output_data.scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
 
                 const unsigned char ord_prefix[] = {OP_FALSE, OP_IF, 0x03, 'o', 'r', 'd'};
-                // find ord_prefix in txin_data.scriptWitness.stack and set found_ord_prefix to true if found
-                for (const valtype &vch : txin_data.scriptWitness.stack) {
-                    if (vch.size() >= sizeof(ord_prefix) &&
-                        memcmp(vch.data(), ord_prefix, sizeof(ord_prefix)) == 0) {
-                        found_ord_prefix = true;
-                        break;
+                // iterate over txin_data.scriptWitness.stack using the length of the ord_prefix
+                // to check if any 6 byte array of the scriptWitness stack is the ord_prefix
+                for (const auto &item : txin_data.scriptWitness.stack) {
+                    if (item.size() >= sizeof(ord_prefix)) {
+                        if (std::equal(std::begin(ord_prefix), std::end(ord_prefix), item.begin())) {
+                            found_ord_prefix = true;
+                            break;
+                        }
                     }
                 }
             };
