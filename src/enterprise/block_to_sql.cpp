@@ -495,14 +495,14 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                                   GetSerializeSize(txin_data.scriptWitness.stack, PROTOCOL_VERSION);
             uint64_t input_weight = GetTransactionInputWeight(txin_data);
 
+            typedef std::vector<unsigned char> valtype;
+
             uint64_t luke_inscription_filter = 0;
-            uint64_t the_stack_filter = 0;
+
             int witnessversion;
             std::vector<unsigned char> witnessprogram;
+
             if (spent_output_data.scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
-
-                typedef std::vector<unsigned char> valtype;
-
                 Span stack{txin_data.scriptWitness.stack};
                 const valtype& script_bytes = SpanPopBack(stack);
                 CScript exec_script = CScript(script_bytes.begin(), script_bytes.end());
@@ -525,15 +525,32 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                         }
                     }
                 };
+            };
 
-                opcode_pos = 0;
+            uint64_t the_stack_filter = 0;
+            if (spent_output_data.scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
+
+                Span stack{txin_data.scriptWitness.stack};
+
+                const valtype& script_bytes = SpanPopBack(stack);
+
+                CScript exec_script = CScript(script_bytes.begin(), script_bytes.end());
+
+                CScript::const_iterator pc = exec_script.begin();
+                CScript::const_iterator pend = exec_script.end();
+                uint32_t opcode_pos = 0;
                 for (; pc < pend; ++opcode_pos) {
                     opcodetype opcode;
                     valtype vchPushValue;
                     exec_script.GetOp(pc, opcode, vchPushValue);
                     const valtype ord_prefix{OP_FALSE, OP_IF, 0x03, 'o', 'r', 'd'};
                     if (opcode == ord_prefix[0] &&
-                        std::mismatch(ord_prefix.begin()+1, ord_prefix.end(), pc, pend).first == ord_prefix.end()) {
+                        std::mismatch(
+                                ord_prefix.begin()+1,
+                                ord_prefix.end(),
+                                pc,
+                                pend
+                                ).first == ord_prefix.end()) {
                         the_stack_filter = 1;
                         break;
                     };
@@ -815,7 +832,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "$55, " // witness_v1_taproot_spend_count
                              "$56, " // witness_unknown_spend_count
                              "$57 "  // coinbase
-                             ") ON CONFLICT (hash) DO NOTHING;"
+                             ") ON CONFLICT (hash) DO UPDATE "
+                             "SET input_data = EXCLUDED.input_data;"
     );
 
     auto r2{w.exec_prepared(
