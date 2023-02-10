@@ -303,6 +303,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
 
         TransactionData transaction_data = TransactionData{transaction_index, block.vtx[transaction_index]};
 
+        bool transaction_found_ord_prefix = false;
+
         // Outputs
         for (std::size_t output_vector = 0; output_vector < transaction->vout.size(); ++output_vector) {
             const CTxOut &txout_data = transaction->vout[output_vector];
@@ -495,15 +497,17 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                                   GetSerializeSize(txin_data.scriptWitness.stack, PROTOCOL_VERSION);
             uint64_t input_weight = GetTransactionInputWeight(txin_data);
 
+            bool input_found_ord_prefix = false;
+
             int witnessversion;
             std::vector<unsigned char> witnessprogram;
-            bool found_ord_prefix = false;
             if (spent_output_data.scriptPubKey.IsWitnessProgram(witnessversion, witnessprogram)) {
                 for (const std::vector<unsigned char> &script_bytes: txin_data.scriptWitness.stack) {
                     CScript exec_script = CScript(script_bytes.begin(), script_bytes.end());
                     const std::string exec_script_string = ScriptToAsmStr(exec_script);
                     if (exec_script_string.find("0 OP_IF 6582895 1") != std::string::npos) {
-                        found_ord_prefix = true;
+                        input_found_ord_prefix = true;
+                        transaction_found_ord_prefix = true;
                     }
                 }
             };
@@ -525,7 +529,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             input_data_string_stream << spent_output_size << ",";
             input_data_string_stream << spent_output_data.nValue << ",";
             input_data_string_stream << spent_script_type << ",";
-            input_data_string_stream << found_ord_prefix;
+            input_data_string_stream << input_found_ord_prefix;
 
             input_data_string_stream << "]";
             if (transaction_index != block.vtx.size() - 1 || input_vector != transaction->vin.size() - 1) {
@@ -570,7 +574,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
         transaction_data_string_stream << transaction_data.m_transaction->GetTotalSize() << ",";
         transaction_data_string_stream << transaction_data.vsize << ",";
         transaction_data_string_stream << transaction_data.weight << ",";
-        transaction_data_string_stream << transaction_data.GetFee();
+        transaction_data_string_stream << transaction_data.GetFee() << ",";
+        transaction_data_string_stream << transaction_found_ord_prefix;
         transaction_data_string_stream << "]";
         if (transaction_index != block.vtx.size() - 1) {
             transaction_data_string_stream << ",";
@@ -781,9 +786,10 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "$56, " // witness_unknown_spend_count
                              "$57 "  // coinbase
                              ") ON CONFLICT (hash) DO UPDATE "
-                             "SET input_data = EXCLUDED.input_data;"
+                             "SET input_data = EXCLUDED.input_data, "
+                             "transaction_data = EXCLUDED.transaction_data;"
     );
-
+// verifychain 4 3000
     auto r2{w.exec_prepared(
             "InsertBlock",
             block.GetBlockHeader().GetHash().GetHex(),                   // hash
