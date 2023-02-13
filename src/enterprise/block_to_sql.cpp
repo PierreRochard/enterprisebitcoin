@@ -258,6 +258,18 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
     CAmount total_fees = 0;
     CAmount coinbase = 0;
 
+    unsigned int ordinals_weight = 0;
+    unsigned int ordinals_count = 0;
+    unsigned int ordinals_size = 0;
+    unsigned int ordinals_vsize = 0;
+    CAmount ordinals_fees = 0;
+
+    unsigned int non_ordinals_weight = 0;
+    unsigned int non_ordinals_count = 0;
+    unsigned int non_ordinals_size = 0;
+    unsigned int non_ordinals_vsize = 0;
+    CAmount non_ordinals_fees = 0;
+
     uint64_t block_output_legacy_signature_operations = 0;
     uint64_t block_input_legacy_signature_operations = 0;
     uint64_t block_input_p2sh_signature_operations = 0;
@@ -303,7 +315,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
 
         TransactionData transaction_data = TransactionData{transaction_index, block.vtx[transaction_index]};
 
-        bool transaction_found_ord_prefix = false;
+        bool transaction_found_ordinal_prefix = false;
 
         // Outputs
         for (std::size_t output_vector = 0; output_vector < transaction->vout.size(); ++output_vector) {
@@ -507,7 +519,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                     const std::string exec_script_string = ScriptToAsmStr(exec_script);
                     if (exec_script_string.find("0 OP_IF 6582895 1") != std::string::npos) {
                         input_found_ord_prefix = true;
-                        transaction_found_ord_prefix = true;
+                        transaction_found_ordinal_prefix = true;
                     }
                 }
             };
@@ -575,7 +587,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
         transaction_data_string_stream << transaction_data.vsize << ",";
         transaction_data_string_stream << transaction_data.weight << ",";
         transaction_data_string_stream << transaction_data.GetFee() << ",";
-        transaction_data_string_stream << transaction_found_ord_prefix;
+        transaction_data_string_stream << transaction_found_ordinal_prefix;
         transaction_data_string_stream << "]";
         if (transaction_index != block.vtx.size() - 1) {
             transaction_data_string_stream << ",";
@@ -583,6 +595,20 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
 
         CAmount fee_rate = transaction_data.GetFee() / transaction_data.vsize;
         fee_rates[fee_rate] += transaction_data.weight;
+
+        if (transaction_found_ordinal_prefix) {
+            ordinals_weight += transaction_data.weight;
+            ordinals_count += 1;
+            ordinals_size += transaction_data.m_transaction->GetTotalSize();
+            ordinals_vsize += transaction_data.vsize;
+            ordinals_fees += transaction_data.GetFee();
+        } else {
+            non_ordinals_weight += transaction_data.weight;
+            non_ordinals_count += 1;
+            non_ordinals_size += transaction_data.m_transaction->GetTotalSize();
+            non_ordinals_vsize += transaction_data.vsize;
+            non_ordinals_fees += transaction_data.GetFee();
+        };
     }
 
     std::ostringstream fee_rates_string_stream;
@@ -709,7 +735,18 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "witness_v0_scripthash_spend_count  , "
                              "witness_v1_taproot_spend_count     , "
                              "witness_unknown_spend_count        , "
-                             "coinbase"
+                             "coinbase , "
+
+                             "ordinals_weight , "
+                                "ordinals_count , "
+                                "ordinals_size , "
+                                "ordinals_vsize , "
+                                "ordinals_fees, "
+                                "non_ordinals_weight , "
+                                "non_ordinals_count , "
+                                "non_ordinals_size , "
+                                "non_ordinals_vsize , "
+                                "non_ordinals_fees "
 
                              ") "
 
@@ -784,10 +821,31 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "$54, " // witness_v0_scripthash_spend_count
                              "$55, " // witness_v1_taproot_spend_count
                              "$56, " // witness_unknown_spend_count
-                             "$57 "  // coinbase
+                             "$57, "  // coinbase
+                             "$58, "  // ordinals_weight
+                                "$59, "  // ordinals_count
+                                "$60, "  // ordinals_size
+                                "$61, "  // ordinals_vsize
+                                "$62, "  // ordinals_fees
+                                "$63, "  // non_ordinals_weight
+                                "$64, "  // non_ordinals_count
+                                "$65, "  // non_ordinals_size
+                                "$66, "  // non_ordinals_vsize
+                                "$67 "  // non_ordinals_fees
+
                              ") ON CONFLICT (hash) DO UPDATE "
                              "SET input_data = EXCLUDED.input_data, "
-                             "transaction_data = EXCLUDED.transaction_data;"
+                             "transaction_data = EXCLUDED.transaction_data, "
+                             "ordinals_weight = EXCLUDED.ordinals_weight, "
+                                "ordinals_count = EXCLUDED.ordinals_count, "
+                                "ordinals_size = EXCLUDED.ordinals_size, "
+                                "ordinals_vsize = EXCLUDED.ordinals_vsize, "
+                                "ordinals_fees = EXCLUDED.ordinals_fees, "
+                                "non_ordinals_weight = EXCLUDED.non_ordinals_weight, "
+                                "non_ordinals_count = EXCLUDED.non_ordinals_count, "
+                                "non_ordinals_size = EXCLUDED.non_ordinals_size, "
+                                "non_ordinals_vsize = EXCLUDED.non_ordinals_vsize, "
+                                "non_ordinals_fees = EXCLUDED.non_ordinals_fees "
     );
 // verifychain 4 3000
     auto r2{w.exec_prepared(
@@ -860,7 +918,18 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             witness_v0_scripthash_spend_count,
             witness_v1_taproot_spend_count,
             witness_unknown_spend_count,
-            coinbase
+            coinbase,
+
+            ordinals_weight,
+            ordinals_count,
+            ordinals_size,
+            ordinals_vsize,
+            ordinals_fees,
+            non_ordinals_weight,
+            non_ordinals_count,
+            non_ordinals_size,
+            non_ordinals_vsize,
+            non_ordinals_fees
     )};
     w.commit();
 

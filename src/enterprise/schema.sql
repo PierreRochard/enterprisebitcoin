@@ -74,7 +74,19 @@ CREATE TABLE bitcoin.blocks
     outputs_total_size                 BIGINT,
     inputs_total_size                  BIGINT,
     net_utxo_size_impact               BIGINT,
-    coinbase                           BIGINT
+    coinbase                           BIGINT,
+
+    ordinals_weight                    BIGINT,
+    ordinals_count                     BIGINT,
+    ordinals_size                      BIGINT,
+    ordinals_vsize                     BIGINT,
+    ordinals_fees                      BIGINT,
+
+    non_ordinals_weight                    BIGINT,
+    non_ordinals_count                     BIGINT,
+    non_ordinals_size                      BIGINT,
+    non_ordinals_vsize                     BIGINT,
+    non_ordinals_fees                      BIGINT
 );
 
 DROP TABLE IF EXISTS bitcoin.mempool_entries CASCADE;
