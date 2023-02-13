@@ -742,6 +742,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                                 "ordinals_size , "
                                 "ordinals_vsize , "
                                 "ordinals_fees, "
+
                                 "non_ordinals_weight , "
                                 "non_ordinals_count , "
                                 "non_ordinals_size , "
@@ -822,11 +823,13 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "$55, " // witness_v1_taproot_spend_count
                              "$56, " // witness_unknown_spend_count
                              "$57, "  // coinbase
+
                              "$58, "  // ordinals_weight
                                 "$59, "  // ordinals_count
                                 "$60, "  // ordinals_size
                                 "$61, "  // ordinals_vsize
                                 "$62, "  // ordinals_fees
+
                                 "$63, "  // non_ordinals_weight
                                 "$64, "  // non_ordinals_count
                                 "$65, "  // non_ordinals_size
@@ -841,6 +844,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                                 "ordinals_size = EXCLUDED.ordinals_size, "
                                 "ordinals_vsize = EXCLUDED.ordinals_vsize, "
                                 "ordinals_fees = EXCLUDED.ordinals_fees, "
+
                                 "non_ordinals_weight = EXCLUDED.non_ordinals_weight, "
                                 "non_ordinals_count = EXCLUDED.non_ordinals_count, "
                                 "non_ordinals_size = EXCLUDED.non_ordinals_size, "
@@ -925,6 +929,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             ordinals_size,
             ordinals_vsize,
             ordinals_fees,
+
             non_ordinals_weight,
             non_ordinals_count,
             non_ordinals_size,

@@ -508,7 +508,7 @@ void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, setEntries &setAnces
 
     vTxHashes.emplace_back(tx.GetWitnessHash(), newit);
     newit->vTxHashesIdx = vTxHashes.size() - 1;
-    MempoolEntryToSql mempool_entry_to_sql(entry);
+//    MempoolEntryToSql mempool_entry_to_sql(entry);
 }
 
 void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
@@ -527,7 +527,7 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
     }
 
     const uint256 hash = it->GetTx().GetHash();
-    RemoveMempoolEntry remove(hash, reason);
+//    RemoveMempoolEntry remove(hash, reason);
     for (const CTxIn& txin : it->GetTx().vin)
         mapNextTx.erase(txin.prevout);
 
