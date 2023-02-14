@@ -202,7 +202,8 @@ MempoolEntryToSql::MempoolEntryToSql(CTxMemPoolEntry mempool_entry) {
 
 };
 
-BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, unsigned int flags) {
+BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, unsigned int flags,
+                       CCoinsViewCursor *cursor) {
     static constexpr size_t
     PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
 
@@ -221,6 +222,84 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                << " port = "
                << dotenv["PGPORT"];
     pqxx::connection c(connStream.str());
+
+    if (block_index->nHeight % 2016 == 0) {
+        std::map < unsigned int, std::map < unsigned int, std::map < bool, std::array < uint64_t, 3 >>
+                                                                                                    >> utxo_set_stats;
+        while (cursor->Valid()) {
+            Coin coin;
+            cursor->GetValue(coin);
+            std::vector <std::vector<unsigned char>> solutions_data;
+            TxoutType which_type = Solver(coin.out.scriptPubKey, solutions_data);
+            const unsigned int script_type = GetTxnOutputTypeEnum(which_type);
+            unsigned int rounded_coin_height = coin.nHeight - (coin.nHeight % 2016);
+            utxo_set_stats[rounded_coin_height][script_type][coin.IsCoinBase()][0] += 1;
+            utxo_set_stats[rounded_coin_height][script_type][coin.IsCoinBase()][1] += coin.out.nValue;
+            utxo_set_stats[rounded_coin_height][script_type][coin.IsCoinBase()][2] +=
+                    PER_UTXO_OVERHEAD + coin.out.scriptPubKey.size();
+            cursor->Next();
+        };
+//        write the utxo_set_stats to the utxo_set_statistics sql table here
+        pqxx::work w2(c);
+        c.prepare("InsertStats",
+                  "INSERT INTO bitcoin.utxo_set_statistics "
+                  "("
+                  "stats_height, "
+                  "stats_day, "
+
+                  "output_height,"
+                  "output_script_type, "
+                  "output_is_coinbase, "
+
+                  "outputs_count, "
+                  "outputs_total_value, "
+                  "outputs_total_size "
+                  ") "
+                  "VALUES "
+                  "("
+                  "$1, " // 1 stats_height
+                  "to_timestamp($2)::date, " // 2 stats_day
+
+                  "$3, " // 3 output_height
+                  "$4, " // 4 output_script_type
+                  "$5, " // 5 output_is_coinbase
+
+                  "$6, " // 6 outputs_count
+                  "$7, " // 7 outputs_total_value
+                  "$8 " // 8 outputs_total_size
+                  ");");
+        for (const auto &output_height: utxo_set_stats) {
+            for (const auto &script_type: output_height.second) {
+                for (const auto &is_coinbase: script_type.second) {
+                    auto r2{w2.exec_prepared(
+                            "InsertStats",
+                            block_index->nHeight, // 1 stats_height
+                            block_index->GetMedianTimePast(), // 2 stats_day
+
+                            output_height.first, // 3 output_height
+                            script_type.first, // 4 output_script_type
+                            is_coinbase.first, // 5 output_is_coinbase
+
+                            is_coinbase.second[0], // 6 outputs_count
+                            is_coinbase.second[1], // 7 outputs_total_value
+                            is_coinbase.second[2] // 8 outputs_total_size
+                    )};
+                }
+            }
+        }
+        w2.commit();
+    }
+    // todo: remove when done!
+    return;
+//    check to see if the block is already in the blocks table
+    pqxx::work w3(c);
+    c.prepare("SelectBlock", "SELECT count(*) FROM bitcoin.blocks WHERE hash = $1");
+    auto r3{w3.exec_prepared("SelectBlock", block.GetHash().ToString())};
+    w3.commit();
+
+    if (r3.size() != 0) {
+        return;
+    }
 
     pqxx::work w(c);
 
@@ -459,9 +538,6 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
 
             unsigned int spent_output_size = GetSerializeSize(spent_output_data, PROTOCOL_VERSION);
 
-            if (spent_output_size > 300) {
-                LogPrintf("\n");
-            }
             unsigned int spent_utxo_size = spent_output_size + PER_UTXO_OVERHEAD;
             transaction_data.total_input_value += spent_output_data.nValue;
             transaction_data.utxo_size_inc -= spent_utxo_size;
@@ -738,16 +814,16 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "coinbase , "
 
                              "ordinals_weight , "
-                                "ordinals_count , "
-                                "ordinals_size , "
-                                "ordinals_vsize , "
-                                "ordinals_fees, "
+                             "ordinals_count , "
+                             "ordinals_size , "
+                             "ordinals_vsize , "
+                             "ordinals_fees, "
 
-                                "non_ordinals_weight , "
-                                "non_ordinals_count , "
-                                "non_ordinals_size , "
-                                "non_ordinals_vsize , "
-                                "non_ordinals_fees "
+                             "non_ordinals_weight , "
+                             "non_ordinals_count , "
+                             "non_ordinals_size , "
+                             "non_ordinals_vsize , "
+                             "non_ordinals_fees "
 
                              ") "
 
@@ -825,31 +901,31 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "$57, "  // coinbase
 
                              "$58, "  // ordinals_weight
-                                "$59, "  // ordinals_count
-                                "$60, "  // ordinals_size
-                                "$61, "  // ordinals_vsize
-                                "$62, "  // ordinals_fees
+                             "$59, "  // ordinals_count
+                             "$60, "  // ordinals_size
+                             "$61, "  // ordinals_vsize
+                             "$62, "  // ordinals_fees
 
-                                "$63, "  // non_ordinals_weight
-                                "$64, "  // non_ordinals_count
-                                "$65, "  // non_ordinals_size
-                                "$66, "  // non_ordinals_vsize
-                                "$67 "  // non_ordinals_fees
+                             "$63, "  // non_ordinals_weight
+                             "$64, "  // non_ordinals_count
+                             "$65, "  // non_ordinals_size
+                             "$66, "  // non_ordinals_vsize
+                             "$67 "  // non_ordinals_fees
 
                              ") ON CONFLICT (hash) DO UPDATE "
                              "SET input_data = EXCLUDED.input_data, "
                              "transaction_data = EXCLUDED.transaction_data, "
                              "ordinals_weight = EXCLUDED.ordinals_weight, "
-                                "ordinals_count = EXCLUDED.ordinals_count, "
-                                "ordinals_size = EXCLUDED.ordinals_size, "
-                                "ordinals_vsize = EXCLUDED.ordinals_vsize, "
-                                "ordinals_fees = EXCLUDED.ordinals_fees, "
+                             "ordinals_count = EXCLUDED.ordinals_count, "
+                             "ordinals_size = EXCLUDED.ordinals_size, "
+                             "ordinals_vsize = EXCLUDED.ordinals_vsize, "
+                             "ordinals_fees = EXCLUDED.ordinals_fees, "
 
-                                "non_ordinals_weight = EXCLUDED.non_ordinals_weight, "
-                                "non_ordinals_count = EXCLUDED.non_ordinals_count, "
-                                "non_ordinals_size = EXCLUDED.non_ordinals_size, "
-                                "non_ordinals_vsize = EXCLUDED.non_ordinals_vsize, "
-                                "non_ordinals_fees = EXCLUDED.non_ordinals_fees "
+                             "non_ordinals_weight = EXCLUDED.non_ordinals_weight, "
+                             "non_ordinals_count = EXCLUDED.non_ordinals_count, "
+                             "non_ordinals_size = EXCLUDED.non_ordinals_size, "
+                             "non_ordinals_vsize = EXCLUDED.non_ordinals_vsize, "
+                             "non_ordinals_fees = EXCLUDED.non_ordinals_fees "
     );
 // verifychain 4 3000
     auto r2{w.exec_prepared(

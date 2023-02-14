@@ -124,3 +124,26 @@ CREATE TABLE bitcoin.mempool_entries
     removal_reason       TEXT,
     removal_time         timestamp with time zone
 );
+
+CREATE TABLE bitcoin.utxo_set_statistics
+(
+    primary_key BIGSERIAL PRIMARY KEY,
+    stats_height BIGINT,
+    stats_day DATE,
+
+    output_height BIGINT,
+    output_day DATE,
+    output_days_count BIGINT,
+    output_script_type BIGINT,
+    output_is_coinbase BOOLEAN,
+
+    outputs_count BIGINT,
+    outputs_total_value BIGINT,
+    outputs_total_size BIGINT
+);
+
+CREATE UNIQUE INDEX utxo_set_statistics_index
+    ON bitcoin.utxo_set_statistics (stats_day, output_height, output_script_type, output_is_coinbase);
+
+CREATE INDEX utxo_set_date_index
+    ON bitcoin.utxo_set_statistics (stats_day);

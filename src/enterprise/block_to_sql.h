@@ -43,7 +43,8 @@ struct TransactionData {
 
 class BlockToSql {
 public:
-    BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, unsigned int flags);
+    BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, unsigned int flags,
+               CCoinsViewCursor *cursor);
 };
 
 class MempoolEntryToSql {
