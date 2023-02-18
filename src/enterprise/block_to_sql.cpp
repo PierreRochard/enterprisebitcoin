@@ -223,7 +223,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                << dotenv["PGPORT"];
     pqxx::connection c(connStream.str());
 
-    if (block_index->nHeight % 2016 == 0) {
+    if (block_index->nHeight % 140 == 0) {
         std::map < unsigned int, std::map < unsigned int, std::map < bool, std::array < uint64_t, 3 >>
                                                                                                     >> utxo_set_stats;
         while (cursor->Valid()) {
@@ -232,7 +232,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             std::vector <std::vector<unsigned char>> solutions_data;
             TxoutType which_type = Solver(coin.out.scriptPubKey, solutions_data);
             const unsigned int script_type = GetTxnOutputTypeEnum(which_type);
-            unsigned int rounded_coin_height = coin.nHeight - (coin.nHeight % 2016);
+            unsigned int rounded_coin_height = coin.nHeight - (coin.nHeight % 140);
             utxo_set_stats[rounded_coin_height][script_type][coin.IsCoinBase()][0] += 1;
             utxo_set_stats[rounded_coin_height][script_type][coin.IsCoinBase()][1] += coin.out.nValue;
             utxo_set_stats[rounded_coin_height][script_type][coin.IsCoinBase()][2] +=
@@ -267,7 +267,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                   "$6, " // 6 outputs_count
                   "$7, " // 7 outputs_total_value
                   "$8 " // 8 outputs_total_size
-                  ");");
+                  ") ON CONFLICT DO NOTHING;");
         for (const auto &output_height: utxo_set_stats) {
             for (const auto &script_type: output_height.second) {
                 for (const auto &is_coinbase: script_type.second) {
@@ -288,17 +288,6 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             }
         }
         w2.commit();
-    }
-    // todo: remove when done!
-    return;
-//    check to see if the block is already in the blocks table
-    pqxx::work w3(c);
-    c.prepare("SelectBlock", "SELECT count(*) FROM bitcoin.blocks WHERE hash = $1");
-    auto r3{w3.exec_prepared("SelectBlock", block.GetHash().ToString())};
-    w3.commit();
-
-    if (r3.size() != 0) {
-        return;
     }
 
     pqxx::work w(c);
