@@ -223,12 +223,31 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                << dotenv["PGPORT"];
     pqxx::connection c(connStream.str());
 
+
+    std::map < unsigned int, std::map < unsigned int, std::map < bool, std::array < uint64_t, 3 >>
+                                                                                                >> utxo_set_stats;
+
+    uint64_t utxo_set_value = 0;
+    uint64_t utxo_set_value_older_than_one_month = 0;
+    uint64_t utxo_set_value_older_than_three_months = 0;
+    uint64_t utxo_set_value_older_than_six_months = 0;
+    uint64_t utxo_set_value_older_than_one_year = 0;
+    uint64_t utxo_set_value_older_than_two_years = 0;
+    uint64_t utxo_set_value_older_than_three_years = 0;
+    uint64_t utxo_set_value_older_than_four_years = 0;
+    uint64_t utxo_set_value_older_than_five_years = 0;
+    uint64_t utxo_set_value_older_than_ten_years = 0;
+
+
     if (block_index->nHeight % 140 == 0) {
-        std::map < unsigned int, std::map < unsigned int, std::map < bool, std::array < uint64_t, 3 >>
-                                                                                                    >> utxo_set_stats;
         while (cursor->Valid()) {
             Coin coin;
             cursor->GetValue(coin);
+            if (coin.nHeight < block_index->nHeight - 140 * 365) {
+                utxo_set_value_older_than_one_year += coin.out.nValue;
+            }
+            utxo_set_value += coin.out.nValue;
+
             std::vector <std::vector<unsigned char>> solutions_data;
             TxoutType which_type = Solver(coin.out.scriptPubKey, solutions_data);
             const unsigned int script_type = GetTxnOutputTypeEnum(which_type);
@@ -239,57 +258,61 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                     PER_UTXO_OVERHEAD + coin.out.scriptPubKey.size();
             cursor->Next();
         };
+
+
+        if (block_index->nHeight > 777000) {
+
 //        write the utxo_set_stats to the utxo_set_statistics sql table here
-        pqxx::work w2(c);
-        c.prepare("InsertStats",
-                  "INSERT INTO bitcoin.utxo_set_statistics "
-                  "("
-                  "stats_height, "
-                  "stats_day, "
+            pqxx::work w2(c);
+            c.prepare("InsertStats",
+                      "INSERT INTO bitcoin.utxo_set_statistics "
+                      "("
+                      "stats_height, "
+                      "stats_day, "
 
-                  "output_height,"
-                  "output_script_type, "
-                  "output_is_coinbase, "
+                      "output_height,"
+                      "output_script_type, "
+                      "output_is_coinbase, "
 
-                  "outputs_count, "
-                  "outputs_total_value, "
-                  "outputs_total_size "
-                  ") "
-                  "VALUES "
-                  "("
-                  "$1, " // 1 stats_height
-                  "to_timestamp($2)::date, " // 2 stats_day
+                      "outputs_count, "
+                      "outputs_total_value, "
+                      "outputs_total_size "
+                      ") "
+                      "VALUES "
+                      "("
+                      "$1, " // 1 stats_height
+                      "to_timestamp($2)::date, " // 2 stats_day
 
-                  "$3, " // 3 output_height
-                  "$4, " // 4 output_script_type
-                  "$5, " // 5 output_is_coinbase
+                      "$3, " // 3 output_height
+                      "$4, " // 4 output_script_type
+                      "$5, " // 5 output_is_coinbase
 
-                  "$6, " // 6 outputs_count
-                  "$7, " // 7 outputs_total_value
-                  "$8 " // 8 outputs_total_size
-                  ") ON CONFLICT DO NOTHING;");
-        for (const auto &output_height: utxo_set_stats) {
-            for (const auto &script_type: output_height.second) {
-                for (const auto &is_coinbase: script_type.second) {
-                    auto r2{w2.exec_prepared(
-                            "InsertStats",
-                            block_index->nHeight, // 1 stats_height
-                            block_index->GetMedianTimePast(), // 2 stats_day
+                      "$6, " // 6 outputs_count
+                      "$7, " // 7 outputs_total_value
+                      "$8 " // 8 outputs_total_size
+                      ") ON CONFLICT DO NOTHING;");
+            for (const auto &output_height: utxo_set_stats) {
+                for (const auto &script_type: output_height.second) {
+                    for (const auto &is_coinbase: script_type.second) {
+                        auto r2{w2.exec_prepared(
+                                "InsertStats",
+                                block_index->nHeight, // 1 stats_height
+                                block_index->GetMedianTimePast(), // 2 stats_day
 
-                            output_height.first, // 3 output_height
-                            script_type.first, // 4 output_script_type
-                            is_coinbase.first, // 5 output_is_coinbase
+                                output_height.first, // 3 output_height
+                                script_type.first, // 4 output_script_type
+                                is_coinbase.first, // 5 output_is_coinbase
 
-                            is_coinbase.second[0], // 6 outputs_count
-                            is_coinbase.second[1], // 7 outputs_total_value
-                            is_coinbase.second[2] // 8 outputs_total_size
-                    )};
+                                is_coinbase.second[0], // 6 outputs_count
+                                is_coinbase.second[1], // 7 outputs_total_value
+                                is_coinbase.second[2] // 8 outputs_total_size
+                        )};
+                    }
                 }
             }
+            w2.commit();
         }
-        w2.commit();
     }
-
     pqxx::work w(c);
 
     std::map<CAmount, unsigned int> fee_rates;
@@ -812,7 +835,10 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "non_ordinals_count , "
                              "non_ordinals_size , "
                              "non_ordinals_vsize , "
-                             "non_ordinals_fees "
+                             "non_ordinals_fees, "
+
+                             "utxo_set_value, "
+                             "utxo_set_value_older_than_one_year "
 
                              ") "
 
@@ -899,7 +925,10 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "$64, "  // non_ordinals_count
                              "$65, "  // non_ordinals_size
                              "$66, "  // non_ordinals_vsize
-                             "$67 "  // non_ordinals_fees
+                             "$67, "  // non_ordinals_fees
+
+                             "$68, "  // utxo_set_value
+                             "$69 "  // utxo_set_value_older_than_one_year
 
                              ") ON CONFLICT (hash) DO UPDATE "
                              "SET input_data = EXCLUDED.input_data, "
@@ -914,7 +943,10 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "non_ordinals_count = EXCLUDED.non_ordinals_count, "
                              "non_ordinals_size = EXCLUDED.non_ordinals_size, "
                              "non_ordinals_vsize = EXCLUDED.non_ordinals_vsize, "
-                             "non_ordinals_fees = EXCLUDED.non_ordinals_fees "
+                             "non_ordinals_fees = EXCLUDED.non_ordinals_fees, "
+
+                             "utxo_set_value = EXCLUDED.utxo_set_value, "
+                             "utxo_set_value_older_than_one_year = EXCLUDED.utxo_set_value_older_than_one_year "
     );
 // verifychain 4 3000
     auto r2{w.exec_prepared(
@@ -999,7 +1031,10 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             non_ordinals_count,
             non_ordinals_size,
             non_ordinals_vsize,
-            non_ordinals_fees
+            non_ordinals_fees,
+
+            utxo_set_value,
+            utxo_set_value_older_than_one_year
     )};
     w.commit();
 

@@ -82,11 +82,14 @@ CREATE TABLE bitcoin.blocks
     ordinals_vsize                     BIGINT,
     ordinals_fees                      BIGINT,
 
-    non_ordinals_weight                    BIGINT,
-    non_ordinals_count                     BIGINT,
-    non_ordinals_size                      BIGINT,
-    non_ordinals_vsize                     BIGINT,
-    non_ordinals_fees                      BIGINT
+    non_ordinals_weight                BIGINT,
+    non_ordinals_count                 BIGINT,
+    non_ordinals_size                  BIGINT,
+    non_ordinals_vsize                 BIGINT,
+    non_ordinals_fees                  BIGINT,
+
+    utxo_set_value                     BIGINT,
+    utxo_set_value_older_than_one_year BIGINT
 );
 
 DROP TABLE IF EXISTS bitcoin.mempool_entries CASCADE;
@@ -127,19 +130,19 @@ CREATE TABLE bitcoin.mempool_entries
 
 CREATE TABLE bitcoin.utxo_set_statistics
 (
-    primary_key BIGSERIAL PRIMARY KEY,
-    stats_height BIGINT,
-    stats_day DATE,
+    primary_key         BIGSERIAL PRIMARY KEY,
+    stats_height        BIGINT,
+    stats_day           DATE,
 
-    output_height BIGINT,
-    output_day DATE,
-    output_days_count BIGINT,
-    output_script_type BIGINT,
-    output_is_coinbase BOOLEAN,
+    output_height       BIGINT,
+    output_day          DATE,
+    output_days_count   BIGINT,
+    output_script_type  BIGINT,
+    output_is_coinbase  BOOLEAN,
 
-    outputs_count BIGINT,
+    outputs_count       BIGINT,
     outputs_total_value BIGINT,
-    outputs_total_size BIGINT
+    outputs_total_size  BIGINT
 );
 
 CREATE UNIQUE INDEX utxo_set_statistics_index
