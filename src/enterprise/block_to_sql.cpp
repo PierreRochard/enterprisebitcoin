@@ -75,7 +75,7 @@ RemoveMempoolEntry::RemoveMempoolEntry(const uint256 hash, MemPoolRemovalReason 
 
 
     std::string removal_reason = GetMemPoolRemovalReasonString(reason);
-    c.prepare("UpdateMempoolEntry", "UPDATE bitcoin.mempool_entries SET "
+    c.prepare("UpdateMempoolEntry", "UPDATE mempool_entries SET "
                                     "removal_reason = $1, "
                                     "removal_time = to_timestamp($2), "
                                     "network = $3 "
@@ -113,7 +113,7 @@ MempoolEntryToSql::MempoolEntryToSql(CTxMemPoolEntry mempool_entry) {
     pqxx::work w(c);
 
 
-    c.prepare("InsertMempoolEntry", "INSERT INTO bitcoin.mempool_entries "
+    c.prepare("InsertMempoolEntry", "INSERT INTO mempool_entries "
                                     "("
                                     "txid, "
                                     "network, "
@@ -265,7 +265,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
 //        write the utxo_set_stats to the utxo_set_statistics sql table here
             pqxx::work w2(c);
             c.prepare("InsertStats",
-                      "INSERT INTO bitcoin.utxo_set_statistics "
+                      "INSERT INTO utxo_set_statistics "
                       "("
                       "stats_height, "
                       "stats_day, "
@@ -752,7 +752,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
     input_script_types_string_stream << "]";
     output_script_types_string_stream << "]";
 
-    c.prepare("InsertBlock", "INSERT INTO bitcoin.blocks "
+    c.prepare("InsertBlock", "INSERT INTO blocks "
                              "("
                              "hash, "
                              "merkle_root, "
