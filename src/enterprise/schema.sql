@@ -89,6 +89,7 @@ CREATE TABLE blocks
     non_ordinals_fees                                BIGINT,
 
     utxo_set_value                                   BIGINT,
+    utxo_set_value_satoshi                           BIGINT,
     utxo_set_value_less_than_one_day                 BIGINT,
     utxo_set_value_less_than_one_week                BIGINT,
     utxo_set_value_less_than_one_month               BIGINT,
@@ -108,7 +109,30 @@ CREATE TABLE blocks
     utxo_set_value_less_than_twelve_years            BIGINT,
     utxo_set_value_less_than_thirteen_years          BIGINT,
     utxo_set_value_less_than_fourteen_years          BIGINT,
-    utxo_set_value_less_than_fifteen_years           BIGINT
+    utxo_set_value_less_than_fifteen_years           BIGINT,
+
+    utxo_set_count                                  BIGINT,
+    utxo_set_count_satoshi                          BIGINT,
+    utxo_set_count_less_than_one_day                BIGINT,
+    utxo_set_count_less_than_one_week               BIGINT,
+    utxo_set_count_less_than_one_month              BIGINT,
+    utxo_set_count_less_than_three_months           BIGINT,
+    utxo_set_count_less_than_six_months             BIGINT,
+    utxo_set_count_less_than_one_year               BIGINT,
+    utxo_set_count_less_than_two_years              BIGINT,
+    utxo_set_count_less_than_three_years            BIGINT,
+    utxo_set_count_less_than_four_years             BIGINT,
+    utxo_set_count_less_than_five_years             BIGINT,
+    utxo_set_count_less_than_six_years              BIGINT,
+    utxo_set_count_less_than_seven_years            BIGINT,
+    utxo_set_count_less_than_eight_years            BIGINT,
+    utxo_set_count_less_than_nine_years             BIGINT,
+    utxo_set_count_less_than_ten_years              BIGINT,
+    utxo_set_count_less_than_eleven_years           BIGINT,
+    utxo_set_count_less_than_twelve_years           BIGINT,
+    utxo_set_count_less_than_thirteen_years         BIGINT,
+    utxo_set_count_less_than_fourteen_years         BIGINT,
+    utxo_set_count_less_than_fifteen_years          BIGINT
 );
 
 DROP TABLE IF EXISTS bitcoin.mempool_entries CASCADE;

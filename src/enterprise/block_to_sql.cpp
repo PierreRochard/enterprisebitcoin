@@ -228,6 +228,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                                                                                                 >> utxo_set_stats;
 
     uint64_t utxo_set_value = 0;
+    uint64_t utxo_set_value_satoshi = 0;
     uint64_t utxo_set_value_less_than_one_day = 0;
     uint64_t utxo_set_value_less_than_one_week = 0;
     uint64_t utxo_set_value_less_than_one_month = 0;
@@ -249,71 +250,122 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
     uint64_t utxo_set_value_less_than_fourteen_years = 0;
     uint64_t utxo_set_value_less_than_fifteen_years = 0;
 
+    uint64_t utxo_set_count = 0;
+    uint64_t utxo_set_count_satoshi = 0;
+    uint64_t utxo_set_count_less_than_one_day = 0;
+    uint64_t utxo_set_count_less_than_one_week = 0;
+    uint64_t utxo_set_count_less_than_one_month = 0;
+    uint64_t utxo_set_count_less_than_three_months = 0;
+    uint64_t utxo_set_count_less_than_six_months = 0;
+    uint64_t utxo_set_count_less_than_one_year = 0;
+    uint64_t utxo_set_count_less_than_two_years = 0;
+    uint64_t utxo_set_count_less_than_three_years = 0;
+    uint64_t utxo_set_count_less_than_four_years = 0;
+    uint64_t utxo_set_count_less_than_five_years = 0;
+    uint64_t utxo_set_count_less_than_six_years = 0;
+    uint64_t utxo_set_count_less_than_seven_years = 0;
+    uint64_t utxo_set_count_less_than_eight_years = 0;
+    uint64_t utxo_set_count_less_than_nine_years = 0;
+    uint64_t utxo_set_count_less_than_ten_years = 0;
+    uint64_t utxo_set_count_less_than_eleven_years = 0;
+    uint64_t utxo_set_count_less_than_twelve_years = 0;
+    uint64_t utxo_set_count_less_than_thirteen_years = 0;
+    uint64_t utxo_set_count_less_than_fourteen_years = 0;
+    uint64_t utxo_set_count_less_than_fifteen_years = 0;
+
     while (cursor->Valid()) {
         Coin coin;
         cursor->GetValue(coin);
-        if (coin.nHeight >= block_index->nHeight - 144) {
-            utxo_set_value_less_than_one_day += coin.out.nValue;
-        }
-        if (coin.nHeight >= block_index->nHeight - 144 * 7) {
-            utxo_set_value_less_than_one_week += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 30) {
-            utxo_set_value_less_than_one_month += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 90) {
-            utxo_set_value_less_than_three_months += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 180) {
-            utxo_set_value_less_than_six_months += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365) {
-            utxo_set_value_less_than_one_year += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365 * 2) {
-            utxo_set_value_less_than_two_years += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365 * 3) {
-            utxo_set_value_less_than_three_years += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365 * 4) {
-            utxo_set_value_less_than_four_years += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365 * 5) {
-            utxo_set_value_less_than_five_years += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365 * 6) {
-            utxo_set_value_less_than_six_years += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365 * 7) {
-            utxo_set_value_less_than_seven_years += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365 * 8) {
-            utxo_set_value_less_than_eight_years += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365 * 9) {
-            utxo_set_value_less_than_nine_years += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365 * 10) {
-            utxo_set_value_less_than_ten_years += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365 * 11) {
-            utxo_set_value_less_than_eleven_years += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365 * 12) {
-            utxo_set_value_less_than_twelve_years += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365 * 13) {
-            utxo_set_value_less_than_thirteen_years += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365 * 14) {
-            utxo_set_value_less_than_fourteen_years += coin.out.nValue;
-        }
-        if (coin.nHeight > block_index->nHeight - 144 * 365 * 15) {
-            utxo_set_value_less_than_fifteen_years += coin.out.nValue;
-        }
 
         utxo_set_value += coin.out.nValue;
+        utxo_set_count += 1;
+
+        if (coin.nHeight <= 50000) {
+            utxo_set_value_satoshi += coin.out.nValue;
+            utxo_set_count_satoshi += 1;
+        } else {
+            if (coin.nHeight >= block_index->nHeight - 144) {
+                utxo_set_value_less_than_one_day += coin.out.nValue;
+                utxo_set_count_less_than_one_day += 1;
+            }
+            if (coin.nHeight >= block_index->nHeight - 144 * 7) {
+                utxo_set_value_less_than_one_week += coin.out.nValue;
+                utxo_set_count_less_than_one_week += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 30) {
+                utxo_set_value_less_than_one_month += coin.out.nValue;
+                utxo_set_count_less_than_one_month += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 90) {
+                utxo_set_value_less_than_three_months += coin.out.nValue;
+                utxo_set_count_less_than_three_months += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 180) {
+                utxo_set_value_less_than_six_months += coin.out.nValue;
+                utxo_set_count_less_than_six_months += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365) {
+                utxo_set_value_less_than_one_year += coin.out.nValue;
+                utxo_set_count_less_than_one_year += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365 * 2) {
+                utxo_set_value_less_than_two_years += coin.out.nValue;
+                utxo_set_count_less_than_two_years += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365 * 3) {
+                utxo_set_value_less_than_three_years += coin.out.nValue;
+                utxo_set_count_less_than_three_years += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365 * 4) {
+                utxo_set_value_less_than_four_years += coin.out.nValue;
+                utxo_set_count_less_than_four_years += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365 * 5) {
+                utxo_set_value_less_than_five_years += coin.out.nValue;
+                utxo_set_count_less_than_five_years += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365 * 6) {
+                utxo_set_value_less_than_six_years += coin.out.nValue;
+                utxo_set_count_less_than_six_years += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365 * 7) {
+                utxo_set_value_less_than_seven_years += coin.out.nValue;
+                utxo_set_count_less_than_seven_years += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365 * 8) {
+                utxo_set_value_less_than_eight_years += coin.out.nValue;
+                utxo_set_count_less_than_eight_years += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365 * 9) {
+                utxo_set_value_less_than_nine_years += coin.out.nValue;
+                utxo_set_count_less_than_nine_years += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365 * 10) {
+                utxo_set_value_less_than_ten_years += coin.out.nValue;
+                utxo_set_count_less_than_ten_years += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365 * 11) {
+                utxo_set_value_less_than_eleven_years += coin.out.nValue;
+                utxo_set_count_less_than_eleven_years += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365 * 12) {
+                utxo_set_value_less_than_twelve_years += coin.out.nValue;
+                utxo_set_count_less_than_twelve_years += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365 * 13) {
+                utxo_set_value_less_than_thirteen_years += coin.out.nValue;
+                utxo_set_count_less_than_thirteen_years += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365 * 14) {
+                utxo_set_value_less_than_fourteen_years += coin.out.nValue;
+                utxo_set_count_less_than_fourteen_years += 1;
+            }
+            if (coin.nHeight > block_index->nHeight - 144 * 365 * 15) {
+                utxo_set_value_less_than_fifteen_years += coin.out.nValue;
+                utxo_set_count_less_than_fifteen_years += 1;
+            }
+        }
+
 
         std::vector <std::vector<unsigned char>> solutions_data;
         TxoutType which_type = Solver(coin.out.scriptPubKey, solutions_data);
@@ -323,6 +375,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
         utxo_set_stats[rounded_coin_height][script_type][coin.IsCoinBase()][1] += coin.out.nValue;
         utxo_set_stats[rounded_coin_height][script_type][coin.IsCoinBase()][2] +=
                 PER_UTXO_OVERHEAD + coin.out.scriptPubKey.size();
+
         cursor->Next();
     };
 
@@ -926,7 +979,32 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "utxo_set_value_less_than_twelve_years, "
                              "utxo_set_value_less_than_thirteen_years, "
                              "utxo_set_value_less_than_fourteen_years, "
-                             "utxo_set_value_less_than_fifteen_years"
+                             "utxo_set_value_less_than_fifteen_years, "
+                             "utxo_set_value_satoshi,"
+
+                             "utxo_set_count, "
+                             "utxo_set_count_satoshi, "
+                             "utxo_set_count_less_than_one_day, "
+                             "utxo_set_count_less_than_one_week, "
+                             "utxo_set_count_less_than_one_month, "
+                             "utxo_set_count_less_than_three_months, "
+                             "utxo_set_count_less_than_six_months, "
+                             "utxo_set_count_less_than_one_year, "
+                             "utxo_set_count_less_than_two_years, "
+                             "utxo_set_count_less_than_three_years, "
+                             "utxo_set_count_less_than_four_years, "
+                             "utxo_set_count_less_than_five_years, "
+                             "utxo_set_count_less_than_six_years, "
+                             "utxo_set_count_less_than_seven_years, "
+                             "utxo_set_count_less_than_eight_years, "
+                             "utxo_set_count_less_than_nine_years, "
+                             "utxo_set_count_less_than_ten_years, "
+                             "utxo_set_count_less_than_eleven_years, "
+                             "utxo_set_count_less_than_twelve_years, "
+                             "utxo_set_count_less_than_thirteen_years, "
+                             "utxo_set_count_less_than_fourteen_years, "
+                             "utxo_set_count_less_than_fifteen_years"
+
 
                              ") "
 
@@ -1035,7 +1113,31 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "$85, "  // utxo_set_value_less_than_twelve_years
                              "$86, "  // utxo_set_value_less_than_thirteen_years
                              "$87, "  // utxo_set_value_less_than_fourteen_years
-                             "$88 "  // utxo_set_value_less_than_fifteen_years
+                             "$88, "  // utxo_set_value_less_than_fifteen_years
+                             "$89, "  // utxo_set_value_satoshi
+
+                             "$90, "  // utxo_set_count
+                             "$91, "  // utxo_set_count_satoshi
+                             "$92, "  // utxo_set_count_less_than_one_day
+                             "$93, "  // utxo_set_count_less_than_one_week
+                             "$94, "  // utxo_set_count_less_than_one_month
+                             "$95, "  // utxo_set_count_less_than_three_months
+                             "$96, "  // utxo_set_count_less_than_six_months
+                             "$97, "  // utxo_set_count_less_than_one_year
+                             "$98, "  // utxo_set_count_less_than_two_years
+                             "$99, "  // utxo_set_count_less_than_three_years
+                             "$100, "  // utxo_set_count_less_than_four_years
+                             "$101, "  // utxo_set_count_less_than_five_years
+                             "$102, "  // utxo_set_count_less_than_six_years
+                             "$103, "  // utxo_set_count_less_than_seven_years
+                             "$104, "  // utxo_set_count_less_than_eight_years
+                             "$105, "  // utxo_set_count_less_than_nine_years
+                             "$106, "  // utxo_set_count_less_than_ten_years
+                             "$107, "  // utxo_set_count_less_than_eleven_years
+                             "$108, "  // utxo_set_count_less_than_twelve_years
+                             "$109, "  // utxo_set_count_less_than_thirteen_years
+                             "$110, "  // utxo_set_count_less_than_fourteen_years
+                             "$111 "  // utxo_set_count_less_than_fifteen_years
                              ") ON CONFLICT (hash) DO UPDATE "
                              "SET input_data = EXCLUDED.input_data, "
                              "transaction_data = EXCLUDED.transaction_data, "
@@ -1159,7 +1261,31 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             utxo_set_value_less_than_twelve_years,
             utxo_set_value_less_than_thirteen_years,
             utxo_set_value_less_than_fourteen_years,
-            utxo_set_value_less_than_fifteen_years
+            utxo_set_value_less_than_fifteen_years,
+            utxo_set_value_satoshi,
+
+            utxo_set_count,
+            utxo_set_count_satoshi,
+            utxo_set_count_less_than_one_day,
+            utxo_set_count_less_than_one_week,
+            utxo_set_count_less_than_one_month,
+            utxo_set_count_less_than_three_months,
+            utxo_set_count_less_than_six_months,
+            utxo_set_count_less_than_one_year,
+            utxo_set_count_less_than_two_years,
+            utxo_set_count_less_than_three_years,
+            utxo_set_count_less_than_four_years,
+            utxo_set_count_less_than_five_years,
+            utxo_set_count_less_than_six_years,
+            utxo_set_count_less_than_seven_years,
+            utxo_set_count_less_than_eight_years,
+            utxo_set_count_less_than_nine_years,
+            utxo_set_count_less_than_ten_years,
+            utxo_set_count_less_than_eleven_years,
+            utxo_set_count_less_than_twelve_years,
+            utxo_set_count_less_than_thirteen_years,
+            utxo_set_count_less_than_fourteen_years,
+            utxo_set_count_less_than_fifteen_years
     )};
     w.commit();
 
