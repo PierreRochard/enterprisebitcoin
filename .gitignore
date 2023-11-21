@@ -150,3 +150,11 @@ dist/
 /guix-build-*
 
 /ci/scratch/
+/.env
+/.idea
+/.vscode
+
+addresses
+
+r6IOP8XXfI
+

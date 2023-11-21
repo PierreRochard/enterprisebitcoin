@@ -14,7 +14,7 @@ TEST_FUZZ_H = \
     test/fuzz/util/mempool.h \
     test/fuzz/util/net.h
 
-libtest_fuzz_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) $(BOOST_CPPFLAGS)
+libtest_fuzz_a_CPPFLAGS = $(AM_CPPFLAGS) $(BITCOIN_INCLUDES) $(BOOST_CPPFLAGS) $(LIBPQXX_CFLAGS) $(POSTGRESQL_CPPFLAGS)
 libtest_fuzz_a_CXXFLAGS = $(AM_CXXFLAGS) $(PIE_FLAGS)
 libtest_fuzz_a_SOURCES = \
   test/fuzz/fuzz.cpp \
@@ -22,3 +22,6 @@ libtest_fuzz_a_SOURCES = \
   test/fuzz/util/mempool.cpp \
   test/fuzz/util/net.cpp \
   $(TEST_FUZZ_H)
+
+LIBTEST_FUZZ += $(LIBPQXX_LIBS) $(POSTGRESQL_LIBS)
+
