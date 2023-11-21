@@ -128,17 +128,18 @@ public:
     EnterpriseDestination operator()(const WitnessUnknown &id) const {
         EnterpriseDestination destination;
         destination.source_type = "WitnessUnknown";
-        destination.version = id.version;
-        destination.length = id.length;
-        std::string str_program(reinterpret_cast<char *>(const_cast<unsigned char *>(id.program)));
+        destination.version = id.GetWitnessVersion();
+        const std::vector<unsigned char>& program = id.GetWitnessProgram();
+        const std::string str_program(reinterpret_cast<const char *>(id.GetWitnessProgram().data()));
         destination.program = str_program;
+        destination.length = program.size();
 
-        if (id.version < 1 || id.version > 16 || id.length < 2 || id.length > 40) {
+        if (id.GetWitnessVersion() < 1 || id.GetWitnessVersion() > 16 || program.size() < 2 || program.size() > 40) {
             return destination;
         }
 
-        std::vector<unsigned char> data = {(unsigned char) id.version};
-        ConvertBits<8, 5, true>([&](unsigned char c) { data.push_back(c); }, id.program, id.program + id.length);
+        std::vector<unsigned char> data = {(unsigned char) id.GetWitnessVersion()};
+        ConvertBits<8, 5, true>([&](unsigned char c) { data.push_back(c); }, program.begin(), program.end());
         destination.address = bech32::Encode(bech32::Encoding::BECH32, m_params.Bech32HRP(), data);
 
         return destination;

@@ -394,7 +394,6 @@ libbitcoin_node_a_SOURCES = \
   dbwrapper.cpp \
   deploymentstatus.cpp \
   enterprise/block_to_sql.cpp \
-  enterprise/enterprise_notification_interface.cpp \
   flatfile.cpp \
   headerssync.cpp \
   httprpc.cpp \

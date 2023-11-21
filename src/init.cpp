@@ -140,9 +140,6 @@ static constexpr bool DEFAULT_REST_ENABLE{false};
 static constexpr bool DEFAULT_I2P_ACCEPT_INCOMING{true};
 static constexpr bool DEFAULT_STOPAFTERBLOCKIMPORT{false};
 
-#include <enterprise/enterprise_notification_interface.h>
-static EnterpriseNotificationInterface* enterpriseNotificationInterface = nullptr;
-
 #ifdef WIN32
 // Win32 LevelDB doesn't use filedescriptors, and the ones used for
 // accessing block files don't count towards the fd_set size limit
@@ -1612,9 +1609,6 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
 
     // Init indexes
     for (auto index : node.indexes) if (!index->Init()) return false;
-
-    enterpriseNotificationInterface = new EnterpriseNotificationInterface(chainman.ActiveChainstate());
-    RegisterValidationInterface(enterpriseNotificationInterface);
 
     // ********************************************************* Step 9: load wallet
     for (const auto& client : node.chain_clients) {

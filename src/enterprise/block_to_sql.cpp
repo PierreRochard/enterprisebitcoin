@@ -8,13 +8,14 @@
 #include <primitives/block.h>
 #include <rpc/blockchain.h>
 #include <script/interpreter.h>
-#include <script/standard.h>
 #include <serialize.h>
 #include <validation.h>
+#include <version.h>
 #include <node/transaction.h>
 #include <index/txindex.h>
 #include <txmempool.h>
-#include <util/system.h>
+#include <common/system.h>
+#include <common/args.h>
 
 #include <timedata.h>
 
@@ -28,10 +29,16 @@ using namespace dotenv;
 
 
 std::string ChainToString() {
-    if (gArgs.GetChainName() == CBaseChainParams::MAIN) return "mainnet";
-    if (gArgs.GetChainName() == CBaseChainParams::TESTNET) return "testnet";
-    if (gArgs.GetChainName() == CBaseChainParams::SIGNET) return "signet";
-    if (gArgs.GetChainName() == CBaseChainParams::REGTEST) return "regtest";
+    switch (gArgs.GetChainType()) {
+        case ChainType::TESTNET:
+            return "testnet";
+        case ChainType::SIGNET:
+            return "signet";
+        case ChainType::REGTEST:
+            return "regtest";
+        case ChainType::MAIN:
+            return "mainnet";
+    }
     return "unknown";
 }
 
@@ -533,7 +540,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
         // Outputs
         for (std::size_t output_vector = 0; output_vector < transaction->vout.size(); ++output_vector) {
             const CTxOut &txout_data = transaction->vout[output_vector];
-            int64_t output_size = GetSerializeSize(txout_data, PROTOCOL_VERSION);
+            int64_t output_size = GetSerializeSize(txout_data);
             block_outputs_total_size += output_size;
             int64_t utxo_size = output_size + PER_UTXO_OVERHEAD;
             int64_t this_output_legacy_signature_operations =
@@ -670,7 +677,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                                                                           flags);
             block_input_witness_signature_operations += this_input_witness_signature_operations;
 
-            unsigned int spent_output_size = GetSerializeSize(spent_output_data, PROTOCOL_VERSION);
+            unsigned int spent_output_size = GetSerializeSize(spent_output_data);
 
             unsigned int spent_utxo_size = spent_output_size + PER_UTXO_OVERHEAD;
             transaction_data.total_input_value += spent_output_data.nValue;
@@ -715,8 +722,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
 
             const unsigned int spent_script_type = GetTxnOutputTypeEnum(which_type);
 
-            uint64_t input_size = GetSerializeSize(txin_data, PROTOCOL_VERSION) +
-                                  GetSerializeSize(txin_data.scriptWitness.stack, PROTOCOL_VERSION);
+            uint64_t input_size = GetSerializeSize(txin_data) +
+                                  GetSerializeSize(txin_data.scriptWitness.stack);
             uint64_t input_weight = GetTransactionInputWeight(txin_data);
 
             bool input_found_ord_prefix = false;
@@ -1183,7 +1190,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             total_input_value,
             total_fees,
 
-            GetSerializeSize(block, CLIENT_VERSION),
+            GetSerializeSize(TX_WITH_WITNESS(block)),
             GetBlockWeight(block) / WITNESS_SCALE_FACTOR,
             GetBlockWeight(block),
 
