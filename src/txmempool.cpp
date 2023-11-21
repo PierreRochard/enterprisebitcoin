@@ -21,6 +21,8 @@
 #include <util/time.h>
 #include <validationinterface.h>
 
+#include <enterprise/block_to_sql.h>
+
 #include <cmath>
 #include <optional>
 
@@ -506,6 +508,7 @@ void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, setEntries &setAnces
 
     vTxHashes.emplace_back(tx.GetWitnessHash(), newit);
     newit->vTxHashesIdx = vTxHashes.size() - 1;
+//    MempoolEntryToSql mempool_entry_to_sql(entry);
 }
 
 void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
@@ -513,6 +516,7 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
     // We increment mempool sequence value no matter removal reason
     // even if not directly reported below.
     uint64_t mempool_sequence = GetAndIncrementSequence();
+
 
     if (reason != MemPoolRemovalReason::BLOCK) {
         // Notify clients that a transaction has been removed from the mempool
@@ -523,6 +527,7 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
     }
 
     const uint256 hash = it->GetTx().GetHash();
+//    RemoveMempoolEntry remove(hash, reason);
     for (const CTxIn& txin : it->GetTx().vin)
         mapNextTx.erase(txin.prevout);
 

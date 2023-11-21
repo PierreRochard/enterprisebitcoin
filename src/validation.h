@@ -17,6 +17,7 @@
 #include <kernel/chainstatemanager_opts.h>
 #include <consensus/amount.h>
 #include <deploymentstatus.h>
+#include <enterprise/block_to_sql.h>
 #include <fs.h>
 #include <node/blockstorage.h>
 #include <policy/feerate.h>
