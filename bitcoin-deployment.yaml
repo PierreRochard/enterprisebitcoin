@@ -11,7 +11,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   hostPath:
-    path: "/mnt/c/KubernetesData/BitcoinData"
+    path: "/run/desktop/mnt/host/c/KubernetesData/BitcoinData"
     type: DirectoryOrCreate
 
 ---
@@ -46,7 +46,8 @@ spec:
     spec:
       containers:
         - name: bitcoin-core
-          image: your-docker-image # Replace with your actual docker image
+          image: bitcoin-core:latest
+          imagePullPolicy: Never
           ports:
             - containerPort: 8332 # Replace with the port used by your application
           volumeMounts:
