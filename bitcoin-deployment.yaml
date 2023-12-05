@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: bitcoin-data
+  labels:
+    type: local
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 1000Gi # Specify the size of the volume
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/mnt/c/KubernetesData/BitcoinData"
+    type: DirectoryOrCreate
+
+---
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bitcoin-data-claim
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1000Gi # Should match the size in the PersistentVolume
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bitcoin-core
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bitcoin-core
+  template:
+    metadata:
+      labels:
+        app: bitcoin-core
+    spec:
+      containers:
+        - name: bitcoin-core
+          image: your-docker-image # Replace with your actual docker image
+          ports:
+            - containerPort: 8332 # Replace with the port used by your application
+          volumeMounts:
+            - mountPath: "/root/.bitcoin"
+              name: bitcoin-volume
+      volumes:
+        - name: bitcoin-volume
+          persistentVolumeClaim:
+            claimName: bitcoin-data-claim
+
+# Expose the Deployment if required (this example uses a NodePort for simplicity)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bitcoin-core-service
+spec:
+  type: NodePort
+  ports:
+    - port: 8332
+      targetPort: 8332
+      nodePort: 30000 # The port that will be open on each node, accessible externally
+  selector:
+    app: bitcoin-core
