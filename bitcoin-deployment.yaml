@@ -7,7 +7,7 @@ metadata:
 spec:
   storageClassName: manual
   capacity:
-    storage: 1000Gi # Specify the size of the volume
+    storage: 1000Gi
   accessModes:
     - ReadWriteOnce
   hostPath:
@@ -26,7 +26,7 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 1000Gi # Should match the size in the PersistentVolume
+      storage: 1000Gi
 
 ---
 
@@ -49,7 +49,12 @@ spec:
           image: bitcoin-core:latest
           imagePullPolicy: Never
           ports:
-            - containerPort: 8332 # Replace with the port used by your application
+            - containerPort: 8332
+          resources:
+            requests:
+              memory: "32Gi"
+            limits:
+              memory: "32Gi"
           volumeMounts:
             - mountPath: "/root/.bitcoin"
               name: bitcoin-volume
@@ -57,9 +62,14 @@ spec:
         - name: bitcoin-volume
           persistentVolumeClaim:
             claimName: bitcoin-data-claim
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 2000
 
-# Expose the Deployment if required (this example uses a NodePort for simplicity)
+
 ---
+
 apiVersion: v1
 kind: Service
 metadata:
@@ -69,6 +79,6 @@ spec:
   ports:
     - port: 8332
       targetPort: 8332
-      nodePort: 30000 # The port that will be open on each node, accessible externally
+      nodePort: 30000
   selector:
     app: bitcoin-core
