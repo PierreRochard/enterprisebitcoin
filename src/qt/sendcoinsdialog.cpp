@@ -397,7 +397,7 @@ bool SendCoinsDialog::PrepareSendText(QString& question_string, QString& informa
 void SendCoinsDialog::presentPSBT(PartiallySignedTransaction& psbtx)
 {
     // Serialize the PSBT
-    CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
+    DataStream ssTx{};
     ssTx << psbtx;
     GUIUtil::setClipboard(EncodeBase64(ssTx.str()).c_str());
     QMessageBox msgBox(this);
@@ -406,6 +406,7 @@ void SendCoinsDialog::presentPSBT(PartiallySignedTransaction& psbtx)
     msgBox.setInformativeText(tr("The PSBT has been copied to the clipboard. You can also save it."));
     msgBox.setStandardButtons(QMessageBox::Save | QMessageBox::Discard);
     msgBox.setDefaultButton(QMessageBox::Discard);
+    msgBox.setObjectName("psbt_copied_message");
     switch (msgBox.exec()) {
     case QMessageBox::Save: {
         QString selectedFilter;

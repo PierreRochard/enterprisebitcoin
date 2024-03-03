@@ -302,7 +302,7 @@ class CWallet final : public WalletStorage, public interfaces::Chain::Notificati
 private:
     CKeyingMaterial vMasterKey GUARDED_BY(cs_wallet);
 
-    bool Unlock(const CKeyingMaterial& vMasterKeyIn, bool accept_no_keys = false);
+    bool Unlock(const CKeyingMaterial& vMasterKeyIn);
 
     std::atomic<bool> fAbortRescan{false};
     std::atomic<bool> fScanningWallet{false}; // controlled by WalletRescanReserver
@@ -418,6 +418,12 @@ private:
     // Appends spk managers into the main 'm_spk_managers'.
     // Must be the only method adding data to it.
     void AddScriptPubKeyMan(const uint256& id, std::unique_ptr<ScriptPubKeyMan> spkm_man);
+
+    // Same as 'AddActiveScriptPubKeyMan' but designed for use within a batch transaction context
+    void AddActiveScriptPubKeyManWithDb(WalletBatch& batch, uint256 id, OutputType type, bool internal);
+
+    //! Cache of descriptor ScriptPubKeys used for IsMine. Maps ScriptPubKey to set of spkms
+    std::unordered_map<CScript, std::vector<ScriptPubKeyMan*>, SaltedSipHasher> m_cached_spks;
 
     /**
      * Catch wallet up to current chain, scanning new blocks, updating the best
@@ -575,7 +581,7 @@ public:
     // Used to prevent deleting the passphrase from memory when it is still in use.
     RecursiveMutex m_relock_mutex;
 
-    bool Unlock(const SecureString& strWalletPassphrase, bool accept_no_keys = false);
+    bool Unlock(const SecureString& strWalletPassphrase);
     bool ChangeWalletPassphrase(const SecureString& strOldWalletPassphrase, const SecureString& strNewWalletPassphrase);
     bool EncryptWallet(const SecureString& strWalletPassphrase);
 
@@ -685,8 +691,8 @@ public:
     bool ImportPubKeys(const std::vector<CKeyID>& ordered_pubkeys, const std::map<CKeyID, CPubKey>& pubkey_map, const std::map<CKeyID, std::pair<CPubKey, KeyOriginInfo>>& key_origins, const bool add_keypool, const bool internal, const int64_t timestamp) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
     bool ImportScriptPubKeys(const std::string& label, const std::set<CScript>& script_pub_keys, const bool have_solving_data, const bool apply_label, const int64_t timestamp) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
 
-    /** Updates wallet birth time if 'new_birth_time' is below it */
-    void FirstKeyTimeChanged(const ScriptPubKeyMan* spkm, int64_t new_birth_time);
+    /** Updates wallet birth time if 'time' is below it */
+    void MaybeUpdateBirthTime(int64_t time);
 
     CFeeRate m_pay_tx_fee{DEFAULT_PAY_TX_FEE};
     unsigned int m_confirm_target{DEFAULT_TX_CONFIRM_TARGET};
@@ -787,11 +793,14 @@ public:
     void chainStateFlushed(ChainstateRole role, const CBlockLocator& loc) override;
 
     DBErrors LoadWallet();
-    DBErrors ZapSelectTx(std::vector<uint256>& vHashIn, std::vector<uint256>& vHashOut) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+
+    /** Erases the provided transactions from the wallet. */
+    util::Result<void> RemoveTxs(std::vector<uint256>& txs_to_remove) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
 
     bool SetAddressBook(const CTxDestination& address, const std::string& strName, const std::optional<AddressPurpose>& purpose);
 
     bool DelAddressBook(const CTxDestination& address);
+    bool DelAddressBookWithDB(WalletBatch& batch, const CTxDestination& address);
 
     bool IsAddressPreviouslySpent(const CTxDestination& dest) const EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
     bool SetAddressPreviouslySpent(WalletBatch& batch, const CTxDestination& dest, bool used) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
@@ -884,6 +893,9 @@ public:
     /* Returns true if the wallet can give out new addresses. This means it has keys in the keypool or can generate new keys */
     bool CanGetAddresses(bool internal = false) const;
 
+    /* Returns the time of the first created key or, in case of an import, it could be the time of the first received transaction */
+    int64_t GetBirthTime() const { return m_birth_time; }
+
     /**
      * Blocks until the wallet state is up-to-date to /at least/ the current
      * chain at the time this function is entered
@@ -956,7 +968,8 @@ public:
     //! Make a LegacyScriptPubKeyMan and set it for all types, internal, and external.
     void SetupLegacyScriptPubKeyMan();
 
-    const CKeyingMaterial& GetEncryptionKey() const override;
+    bool WithEncryptionKey(std::function<bool (const CKeyingMaterial&)> cb) const override;
+
     bool HasEncryptionKeys() const override;
 
     /** Get last block processed height */
@@ -984,7 +997,7 @@ public:
     void ConnectScriptPubKeyManNotifiers();
 
     //! Instantiate a descriptor ScriptPubKeyMan from the WalletDescriptor and load it
-    void LoadDescriptorScriptPubKeyMan(uint256 id, WalletDescriptor& desc);
+    DescriptorScriptPubKeyMan& LoadDescriptorScriptPubKeyMan(uint256 id, WalletDescriptor& desc);
 
     //! Adds the active ScriptPubKeyMan for the specified type and internal. Writes it to the wallet file
     //! @param[in] id The unique id for the ScriptPubKeyMan
@@ -1035,6 +1048,11 @@ public:
 
     //! Whether the (external) signer performs R-value signature grinding
     bool CanGrindR() const;
+
+    //! Add scriptPubKeys for this ScriptPubKeyMan into the scriptPubKey cache
+    void CacheNewScriptPubKeys(const std::set<CScript>& spks, ScriptPubKeyMan* spkm);
+
+    void TopUpCallback(const std::set<CScript>& spks, ScriptPubKeyMan* spkm) override;
 };
 
 /**

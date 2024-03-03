@@ -28,13 +28,13 @@
 class COutPoint
 {
 public:
-    uint256 hash;
+    Txid hash;
     uint32_t n;
 
     static constexpr uint32_t NULL_INDEX = std::numeric_limits<uint32_t>::max();
 
     COutPoint(): n(NULL_INDEX) { }
-    COutPoint(const uint256& hashIn, uint32_t nIn): hash(hashIn), n(nIn) { }
+    COutPoint(const Txid& hashIn, uint32_t nIn): hash(hashIn), n(nIn) { }
 
     SERIALIZE_METHODS(COutPoint, obj) { READWRITE(obj.hash, obj.n); }
 
@@ -43,8 +43,7 @@ public:
 
     friend bool operator<(const COutPoint& a, const COutPoint& b)
     {
-        int cmp = a.hash.Compare(b.hash);
-        return cmp < 0 || (cmp == 0 && a.n < b.n);
+        return std::tie(a.hash, a.n) < std::tie(b.hash, b.n);
     }
 
     friend bool operator==(const COutPoint& a, const COutPoint& b)
@@ -125,7 +124,7 @@ public:
     }
 
     explicit CTxIn(COutPoint prevoutIn, CScript scriptSigIn=CScript(), uint32_t nSequenceIn=SEQUENCE_FINAL);
-    CTxIn(uint256 hashPrevTx, uint32_t nOut, CScript scriptSigIn=CScript(), uint32_t nSequenceIn=SEQUENCE_FINAL);
+    CTxIn(Txid hashPrevTx, uint32_t nOut, CScript scriptSigIn=CScript(), uint32_t nSequenceIn=SEQUENCE_FINAL);
 
     SERIALIZE_METHODS(CTxIn, obj) { READWRITE(obj.prevout, obj.scriptSig, obj.nSequence); }
 
@@ -311,11 +310,14 @@ public:
 
 private:
     /** Memory only. */
+    const bool m_has_witness;
     const Txid hash;
     const Wtxid m_witness_hash;
 
     Txid ComputeHash() const;
     Wtxid ComputeWitnessHash() const;
+
+    bool ComputeHasWitness() const;
 
 public:
     /** Convert a CMutableTransaction into a CTransaction. */
@@ -368,15 +370,7 @@ public:
 
     std::string ToString() const;
 
-    bool HasWitness() const
-    {
-        for (size_t i = 0; i < vin.size(); i++) {
-            if (!vin[i].scriptWitness.IsNull()) {
-                return true;
-            }
-        }
-        return false;
-    }
+    bool HasWitness() const { return m_has_witness; }
 };
 
 /** A mutable version of CTransaction. */

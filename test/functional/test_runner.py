@@ -17,6 +17,7 @@ from collections import deque
 import configparser
 import datetime
 import os
+import platform
 import time
 import shutil
 import signal
@@ -42,8 +43,8 @@ except UnicodeDecodeError:
     CROSS = "x "
     CIRCLE = "o "
 
-if os.name != 'nt' or sys.getwindowsversion() >= (10, 0, 14393): #type:ignore
-    if os.name == 'nt':
+if platform.system() != 'Windows' or sys.getwindowsversion() >= (10, 0, 14393): #type:ignore
+    if platform.system() == 'Windows':
         import ctypes
         kernel32 = ctypes.windll.kernel32  # type: ignore
         ENABLE_VIRTUAL_TERMINAL_PROCESSING = 4
@@ -156,6 +157,7 @@ BASE_SCRIPTS = [
     'p2p_invalid_messages.py',
     'rpc_createmultisig.py',
     'p2p_timeouts.py',
+    'p2p_timeouts.py --v2transport',
     'wallet_dump.py --legacy-wallet',
     'rpc_signer.py',
     'wallet_signer.py --descriptors',
@@ -206,6 +208,8 @@ BASE_SCRIPTS = [
     'wallet_createwallet.py --descriptors',
     'wallet_watchonly.py --legacy-wallet',
     'wallet_watchonly.py --usecli --legacy-wallet',
+    'wallet_reindex.py --legacy-wallet',
+    'wallet_reindex.py --descriptors',
     'wallet_reorgsrestore.py',
     'wallet_conflicts.py --legacy-wallet',
     'wallet_conflicts.py --descriptors',
@@ -243,12 +247,14 @@ BASE_SCRIPTS = [
     'p2p_getdata.py',
     'p2p_addrfetch.py',
     'rpc_net.py',
+    'rpc_net.py --v2transport',
     'wallet_keypool.py --legacy-wallet',
     'wallet_keypool.py --descriptors',
     'wallet_descriptor.py --descriptors',
     'p2p_nobloomfilter_messages.py',
     'p2p_filter.py',
     'rpc_setban.py',
+    'rpc_setban.py --v2transport',
     'p2p_blocksonly.py',
     'mining_prioritisetransaction.py',
     'p2p_invalid_locator.py',
@@ -257,7 +263,10 @@ BASE_SCRIPTS = [
     'p2p_invalid_tx.py',
     'p2p_invalid_tx.py --v2transport',
     'p2p_v2_transport.py',
+    'p2p_v2_encrypted.py',
+    'p2p_v2_earlykeyresponse.py',
     'example_test.py',
+    'mempool_accept_v3.py',
     'wallet_txn_doublespend.py --legacy-wallet',
     'wallet_multisig_descriptor_psbt.py --descriptors',
     'wallet_txn_doublespend.py --descriptors',
@@ -299,6 +308,7 @@ BASE_SCRIPTS = [
     'wallet_crosschain.py',
     'mining_basic.py',
     'feature_signet.py',
+    'p2p_mutated_blocks.py',
     'wallet_implicitsegwit.py --legacy-wallet',
     'rpc_named_arguments.py',
     'feature_startupnotify.py',
@@ -328,9 +338,12 @@ BASE_SCRIPTS = [
     'wallet_send.py --descriptors',
     'wallet_sendall.py --legacy-wallet',
     'wallet_sendall.py --descriptors',
+    'wallet_sendmany.py --descriptors',
+    'wallet_sendmany.py --legacy-wallet',
     'wallet_create_tx.py --descriptors',
     'wallet_inactive_hdchains.py --legacy-wallet',
     'wallet_spend_unconfirmed.py',
+    'wallet_rescan_unconfirmed.py --descriptors',
     'p2p_fingerprint.py',
     'feature_uacomment.py',
     'feature_init.py',
@@ -339,6 +352,7 @@ BASE_SCRIPTS = [
     'feature_filelock.py',
     'feature_loadblock.py',
     'feature_assumeutxo.py',
+    'wallet_assumeutxo.py --descriptors',
     'p2p_dos_header_tree.py',
     'p2p_add_connections.py',
     'feature_bind_port_discover.py',
@@ -368,6 +382,7 @@ BASE_SCRIPTS = [
     'wallet_orphanedreward.py',
     'wallet_timelock.py',
     'p2p_node_network_limited.py',
+    'p2p_node_network_limited.py --v2transport',
     'p2p_permissions.py',
     'feature_blocksdir.py',
     'wallet_startup.py',
@@ -420,6 +435,8 @@ def main():
     parser.add_argument('--tmpdirprefix', '-t', default=tempfile.gettempdir(), help="Root directory for datadirs")
     parser.add_argument('--failfast', '-F', action='store_true', help='stop execution after the first test failure')
     parser.add_argument('--filter', help='filter scripts to run by regular expression')
+    parser.add_argument('--skipunit', '-u', action='store_true', help='skip unit tests for the test framework')
+
 
     args, unknown_args = parser.parse_known_args()
     if not args.ansi:
@@ -530,9 +547,10 @@ def main():
         combined_logs_len=args.combinedlogslen,
         failfast=args.failfast,
         use_term_control=args.ansi,
+        skipunit=args.skipunit,
     )
 
-def run_tests(*, test_list, src_dir, build_dir, tmpdir, jobs=1, enable_coverage=False, args=None, combined_logs_len=0, failfast=False, use_term_control):
+def run_tests(*, test_list, src_dir, build_dir, tmpdir, jobs=1, enable_coverage=False, args=None, combined_logs_len=0, failfast=False, use_term_control, skipunit=False):
     args = args or []
 
     # Warn if bitcoind is already running
@@ -549,21 +567,20 @@ def run_tests(*, test_list, src_dir, build_dir, tmpdir, jobs=1, enable_coverage=
     if os.path.isdir(cache_dir):
         print("%sWARNING!%s There is a cache directory here: %s. If tests fail unexpectedly, try deleting the cache directory." % (BOLD[1], BOLD[0], cache_dir))
 
-    # Test Framework Tests
-    print("Running Unit Tests for Test Framework Modules")
 
     tests_dir = src_dir + '/test/functional/'
     # This allows `test_runner.py` to work from an out-of-source build directory using a symlink,
     # a hard link or a copy on any platform. See https://github.com/bitcoin/bitcoin/pull/27561.
     sys.path.append(tests_dir)
 
-    test_framework_tests = unittest.TestSuite()
-    for module in TEST_FRAMEWORK_MODULES:
-        test_framework_tests.addTest(unittest.TestLoader().loadTestsFromName("test_framework.{}".format(module)))
-    result = unittest.TextTestRunner(verbosity=1, failfast=True).run(test_framework_tests)
-    if not result.wasSuccessful():
-        logging.debug("Early exiting after failure in TestFramework unit tests")
-        sys.exit(False)
+    if not skipunit:
+        print("Running Unit Tests for Test Framework Modules")
+        test_framework_tests = unittest.TestSuite()
+        for module in TEST_FRAMEWORK_MODULES:
+            test_framework_tests.addTest(unittest.TestLoader().loadTestsFromName("test_framework.{}".format(module)))
+        result = unittest.TextTestRunner(verbosity=1, failfast=True).run(test_framework_tests)
+        if not result.wasSuccessful():
+            sys.exit("Early exiting after failure in TestFramework unit tests")
 
     flags = ['--cachedir={}'.format(cache_dir)] + args
 

@@ -507,8 +507,6 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         assert_equal(len(binary_cli), num_nodes)
         for i in range(num_nodes):
             args = list(extra_args[i])
-            if self.options.v2transport and ("-v2transport=0" not in args):
-                args.append("-v2transport=1")
             test_node_i = TestNode(
                 i,
                 get_datadir_path(self.options.tmpdir, i),
@@ -527,6 +525,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                 start_perf=self.options.perf,
                 use_valgrind=self.options.valgrind,
                 descriptors=self.options.descriptors,
+                v2transport=self.options.v2transport,
             )
             self.nodes.append(test_node_i)
             if not test_node_i.version_is_at_least(170000):
@@ -601,12 +600,12 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         ip_port = "127.0.0.1:" + str(p2p_port(b))
 
         if peer_advertises_v2 is None:
-            peer_advertises_v2 = self.options.v2transport
+            peer_advertises_v2 = from_connection.use_v2transport
 
-        if peer_advertises_v2:
-            from_connection.addnode(node=ip_port, command="onetry", v2transport=True)
+        if peer_advertises_v2 != from_connection.use_v2transport:
+            from_connection.addnode(node=ip_port, command="onetry", v2transport=peer_advertises_v2)
         else:
-            # skip the optional third argument (default false) for
+            # skip the optional third argument if it matches the default, for
             # compatibility with older clients
             from_connection.addnode(ip_port, "onetry")
 
@@ -1022,5 +1021,4 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         return self.config["components"].getboolean("USE_BDB")
 
     def has_blockfile(self, node, filenum: str):
-        blocksdir = node.datadir_path / self.chain / 'blocks'
-        return (blocksdir / f"blk{filenum}.dat").is_file()
+        return (node.blocks_path/ f"blk{filenum}.dat").is_file()

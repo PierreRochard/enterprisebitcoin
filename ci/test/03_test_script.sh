@@ -36,8 +36,8 @@ export HOST=${HOST:-$("$BASE_ROOT_DIR/depends/config.guess")}
   # CI, so as a temporary minimal fix to work around UB and CI failures, leave
   # bytes_written unmodified.
   # See https://github.com/bitcoin/bitcoin/pull/28359#issuecomment-1698694748
-  echo 'diff --git a/src/leveldb/db/db_impl.cc b/src/leveldb/db/db_impl.cc
-index 65e31724bc..f61b471953 100644
+  # Tee patch to stdout to make it clear CI is testing modified code.
+  tee >(patch -p1) <<'EOF'
 --- a/src/leveldb/db/db_impl.cc
 +++ b/src/leveldb/db/db_impl.cc
 @@ -1028,9 +1028,6 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
@@ -49,8 +49,8 @@ index 65e31724bc..f61b471953 100644
 -  }
 
    mutex_.Lock();
-   stats_[compact->compaction->level() + 1].Add(stats);' | patch -p1
-  git diff
+   stats_[compact->compaction->level() + 1].Add(stats);
+EOF
 )
 
 if [ "$RUN_FUZZ_TESTS" = "true" ]; then
@@ -163,15 +163,16 @@ if [ -n "$USE_VALGRIND" ]; then
 fi
 
 if [ "$RUN_UNIT_TESTS" = "true" ]; then
-  bash -c "${TEST_RUNNER_ENV} DIR_UNIT_TEST_DATA=${DIR_UNIT_TEST_DATA} LD_LIBRARY_PATH=${DEPENDS_DIR}/${HOST}/lib make $MAKEJOBS check VERBOSE=1"
+  DIR_UNIT_TEST_DATA="${DIR_UNIT_TEST_DATA}" LD_LIBRARY_PATH="${DEPENDS_DIR}/${HOST}/lib" make "${MAKEJOBS}" check VERBOSE=1
 fi
 
 if [ "$RUN_UNIT_TESTS_SEQUENTIAL" = "true" ]; then
-  bash -c "${TEST_RUNNER_ENV} DIR_UNIT_TEST_DATA=${DIR_UNIT_TEST_DATA} LD_LIBRARY_PATH=${DEPENDS_DIR}/${HOST}/lib ${BASE_OUTDIR}/bin/test_bitcoin --catch_system_errors=no -l test_suite"
+  DIR_UNIT_TEST_DATA="${DIR_UNIT_TEST_DATA}" LD_LIBRARY_PATH="${DEPENDS_DIR}/${HOST}/lib" "${BASE_OUTDIR}"/bin/test_bitcoin --catch_system_errors=no -l test_suite
 fi
 
 if [ "$RUN_FUNCTIONAL_TESTS" = "true" ]; then
-  bash -c "LD_LIBRARY_PATH=${DEPENDS_DIR}/${HOST}/lib ${TEST_RUNNER_ENV} test/functional/test_runner.py --ci $MAKEJOBS --tmpdirprefix ${BASE_SCRATCH_DIR}/test_runner/ --ansi --combinedlogslen=99999999 --timeout-factor=${TEST_RUNNER_TIMEOUT_FACTOR} ${TEST_RUNNER_EXTRA} --quiet --failfast"
+  # shellcheck disable=SC2086
+  LD_LIBRARY_PATH="${DEPENDS_DIR}/${HOST}/lib" test/functional/test_runner.py --ci "${MAKEJOBS}" --tmpdirprefix "${BASE_SCRATCH_DIR}"/test_runner/ --ansi --combinedlogslen=99999999 --timeout-factor="${TEST_RUNNER_TIMEOUT_FACTOR}" ${TEST_RUNNER_EXTRA} --quiet --failfast
 fi
 
 if [ "${RUN_TIDY}" = "true" ]; then
@@ -200,5 +201,6 @@ if [ "${RUN_TIDY}" = "true" ]; then
 fi
 
 if [ "$RUN_FUZZ_TESTS" = "true" ]; then
-  bash -c "LD_LIBRARY_PATH=${DEPENDS_DIR}/${HOST}/lib test/fuzz/test_runner.py ${FUZZ_TESTS_CONFIG} $MAKEJOBS -l DEBUG ${DIR_FUZZ_IN} --empty_min_time=60"
+  # shellcheck disable=SC2086
+  LD_LIBRARY_PATH="${DEPENDS_DIR}/${HOST}/lib" test/fuzz/test_runner.py ${FUZZ_TESTS_CONFIG} "${MAKEJOBS}" -l DEBUG "${DIR_FUZZ_IN}" --empty_min_time=60
 fi

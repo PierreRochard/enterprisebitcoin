@@ -32,13 +32,13 @@ static CBlock BuildBlockTestCase() {
     block.hashPrevBlock = InsecureRand256();
     block.nBits = 0x207fffff;
 
-    tx.vin[0].prevout.hash = InsecureRand256();
+    tx.vin[0].prevout.hash = Txid::FromUint256(InsecureRand256());
     tx.vin[0].prevout.n = 0;
     block.vtx[1] = MakeTransactionRef(tx);
 
     tx.vin.resize(10);
     for (size_t i = 0; i < tx.vin.size(); i++) {
-        tx.vin[i].prevout.hash = InsecureRand256();
+        tx.vin[i].prevout.hash = Txid::FromUint256(InsecureRand256());
         tx.vin[i].prevout.n = 0;
     }
     block.vtx[2] = MakeTransactionRef(tx);
@@ -68,7 +68,7 @@ BOOST_AUTO_TEST_CASE(SimpleRoundTripTest)
     {
         CBlockHeaderAndShortTxIDs shortIDs{block};
 
-        CDataStream stream(SER_NETWORK, PROTOCOL_VERSION);
+        DataStream stream{};
         stream << shortIDs;
 
         CBlockHeaderAndShortTxIDs shortIDs2;
@@ -119,7 +119,7 @@ public:
     std::vector<PrefilledTransaction> prefilledtxn;
 
     explicit TestHeaderAndShortIDs(const CBlockHeaderAndShortTxIDs& orig) {
-        CDataStream stream(SER_NETWORK, PROTOCOL_VERSION);
+        DataStream stream{};
         stream << orig;
         stream >> *this;
     }
@@ -127,7 +127,7 @@ public:
         TestHeaderAndShortIDs(CBlockHeaderAndShortTxIDs{block}) {}
 
     uint64_t GetShortID(const uint256& txhash) const {
-        CDataStream stream(SER_NETWORK, PROTOCOL_VERSION);
+        DataStream stream{};
         stream << *this;
         CBlockHeaderAndShortTxIDs base;
         stream >> base;
@@ -158,7 +158,7 @@ BOOST_AUTO_TEST_CASE(NonCoinbasePreforwardRTTest)
         shortIDs.shorttxids[0] = shortIDs.GetShortID(block.vtx[0]->GetHash());
         shortIDs.shorttxids[1] = shortIDs.GetShortID(block.vtx[2]->GetHash());
 
-        CDataStream stream(SER_NETWORK, PROTOCOL_VERSION);
+        DataStream stream{};
         stream << shortIDs;
 
         CBlockHeaderAndShortTxIDs shortIDs2;
@@ -228,7 +228,7 @@ BOOST_AUTO_TEST_CASE(SufficientPreforwardRTTest)
         shortIDs.shorttxids.resize(1);
         shortIDs.shorttxids[0] = shortIDs.GetShortID(block.vtx[1]->GetHash());
 
-        CDataStream stream(SER_NETWORK, PROTOCOL_VERSION);
+        DataStream stream{};
         stream << shortIDs;
 
         CBlockHeaderAndShortTxIDs shortIDs2;
@@ -283,7 +283,7 @@ BOOST_AUTO_TEST_CASE(EmptyBlockRoundTripTest)
     {
         CBlockHeaderAndShortTxIDs shortIDs{block};
 
-        CDataStream stream(SER_NETWORK, PROTOCOL_VERSION);
+        DataStream stream{};
         stream << shortIDs;
 
         CBlockHeaderAndShortTxIDs shortIDs2;

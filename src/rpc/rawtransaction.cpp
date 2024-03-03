@@ -40,7 +40,6 @@
 #include <util/vector.h>
 #include <validation.h>
 #include <validationinterface.h>
-#include <version.h>
 
 #include <numeric>
 #include <stdint.h>
@@ -63,7 +62,7 @@ static void TxToJSON(const CTransaction& tx, const uint256 hashBlock, UniValue& 
     // Blockchain contextual information (confirmations and blocktime) is not
     // available to code in bitcoin-common, so we query them here and push the
     // data into the returned UniValue.
-    TxToUniv(tx, /*block_hash=*/uint256(), entry, /*include_hex=*/true, RPCSerializationWithoutWitness(), txundo, verbosity);
+    TxToUniv(tx, /*block_hash=*/uint256(), entry, /*include_hex=*/true, txundo, verbosity);
 
     if (!hashBlock.IsNull()) {
         LOCK(cs_main);
@@ -384,7 +383,7 @@ static RPCHelpMan getrawtransaction()
     }
 
     if (verbosity <= 0) {
-        return EncodeHexTx(*tx, /*without_witness=*/RPCSerializationWithoutWitness());
+        return EncodeHexTx(*tx);
     }
 
     UniValue result(UniValue::VOBJ);
@@ -395,7 +394,7 @@ static RPCHelpMan getrawtransaction()
     // If request is verbosity >= 1 but no blockhash was given, then look up the blockindex
     if (request.params[2].isNull()) {
         LOCK(cs_main);
-        blockindex = chainman.m_blockman.LookupBlockIndex(hash_block);
+        blockindex = chainman.m_blockman.LookupBlockIndex(hash_block); // May be nullptr for mempool transactions
     }
     if (verbosity == 1) {
         TxToJSON(*tx, hash_block, result, chainman.ActiveChainstate());
@@ -404,10 +403,8 @@ static RPCHelpMan getrawtransaction()
 
     CBlockUndo blockUndo;
     CBlock block;
-    const bool is_block_pruned{WITH_LOCK(cs_main, return chainman.m_blockman.IsBlockPruned(blockindex))};
 
-    if (tx->IsCoinBase() ||
-        !blockindex || is_block_pruned ||
+    if (tx->IsCoinBase() || !blockindex || WITH_LOCK(::cs_main, return chainman.m_blockman.IsBlockPruned(*blockindex)) ||
         !(chainman.m_blockman.UndoReadFromDisk(blockUndo, *blockindex) && chainman.m_blockman.ReadBlockFromDisk(block, *blockindex))) {
         TxToJSON(*tx, hash_block, result, chainman.ActiveChainstate());
         return result;
@@ -1493,7 +1490,7 @@ static RPCHelpMan combinepsbt()
         throw JSONRPCTransactionError(error);
     }
 
-    CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
+    DataStream ssTx{};
     ssTx << merged_psbt;
     return EncodeBase64(ssTx);
 },
@@ -1538,7 +1535,7 @@ static RPCHelpMan finalizepsbt()
     bool complete = FinalizeAndExtractPSBT(psbtx, mtx);
 
     UniValue result(UniValue::VOBJ);
-    CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
+    DataStream ssTx{};
     std::string result_str;
 
     if (complete && extract) {
@@ -1589,7 +1586,7 @@ static RPCHelpMan createpsbt()
     }
 
     // Serialize the PSBT
-    CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
+    DataStream ssTx{};
     ssTx << psbtx;
 
     return EncodeBase64(ssTx);
@@ -1656,7 +1653,7 @@ static RPCHelpMan converttopsbt()
     }
 
     // Serialize the PSBT
-    CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
+    DataStream ssTx{};
     ssTx << psbtx;
 
     return EncodeBase64(ssTx);
@@ -1703,7 +1700,7 @@ static RPCHelpMan utxoupdatepsbt()
         /*sighash_type=*/SIGHASH_ALL,
         /*finalize=*/false);
 
-    CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
+    DataStream ssTx{};
     ssTx << psbtx;
     return EncodeBase64(ssTx);
 },
@@ -1804,7 +1801,7 @@ static RPCHelpMan joinpsbts()
     }
     shuffled_psbt.unknown.insert(merged_psbt.unknown.begin(), merged_psbt.unknown.end());
 
-    CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
+    DataStream ssTx{};
     ssTx << shuffled_psbt;
     return EncodeBase64(ssTx);
 },
@@ -1984,7 +1981,7 @@ RPCHelpMan descriptorprocesspsbt()
         complete &= PSBTInputSigned(input);
     }
 
-    CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
+    DataStream ssTx{};
     ssTx << psbtx;
 
     UniValue result(UniValue::VOBJ);

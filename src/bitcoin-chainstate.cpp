@@ -117,7 +117,6 @@ int main(int argc, char* argv[])
     const ChainstateManager::Options chainman_opts{
         .chainparams = *chainparams,
         .datadir = abs_datadir,
-        .adjusted_time_callback = NodeClock::now,
         .notifications = *notifications,
     };
     const node::BlockManager::Options blockman_opts{
@@ -125,14 +124,14 @@ int main(int argc, char* argv[])
         .blocks_dir = abs_datadir / "blocks",
         .notifications = chainman_opts.notifications,
     };
-    ChainstateManager chainman{kernel_context.interrupt, chainman_opts, blockman_opts};
+    util::SignalInterrupt interrupt;
+    ChainstateManager chainman{interrupt, chainman_opts, blockman_opts};
 
     node::CacheSizes cache_sizes;
     cache_sizes.block_tree_db = 2 << 20;
     cache_sizes.coins_db = 2 << 22;
     cache_sizes.coins = (450 << 20) - (2 << 20) - (2 << 22);
     node::ChainstateLoadOptions options;
-    options.check_interrupt = [] { return false; };
     auto [status, error] = node::LoadChainstate(chainman, cache_sizes, options);
     if (status != node::ChainstateLoadStatus::SUCCESS) {
         std::cerr << "Failed to load Chain state from your datadir." << std::endl;
@@ -290,7 +289,6 @@ epilogue:
     // dereferencing and UB.
     scheduler.stop();
     if (chainman.m_thread_load.joinable()) chainman.m_thread_load.join();
-    StopScriptCheckWorkerThreads();
 
     GetMainSignals().FlushBackgroundCallbacks();
     {

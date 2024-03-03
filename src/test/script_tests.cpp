@@ -2,6 +2,10 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#if defined(HAVE_CONFIG_H)
+#include <config/bitcoin-config.h>
+#endif
+
 #include <test/data/script_tests.json.h>
 #include <test/data/bip341_wallet_vectors.json.h>
 
@@ -1051,10 +1055,9 @@ sign_multisig(const CScript& scriptPubKey, const CKey& key, const CTransaction& 
 BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG12)
 {
     ScriptError err;
-    CKey key1, key2, key3;
-    key1.MakeNewKey(true);
-    key2.MakeNewKey(false);
-    key3.MakeNewKey(true);
+    CKey key1 = GenerateRandomKey();
+    CKey key2 = GenerateRandomKey(/*compressed=*/false);
+    CKey key3 = GenerateRandomKey();
 
     CScript scriptPubKey12;
     scriptPubKey12 << OP_1 << ToByteVector(key1.GetPubKey()) << ToByteVector(key2.GetPubKey()) << OP_2 << OP_CHECKMULTISIG;
@@ -1081,11 +1084,10 @@ BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG12)
 BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG23)
 {
     ScriptError err;
-    CKey key1, key2, key3, key4;
-    key1.MakeNewKey(true);
-    key2.MakeNewKey(false);
-    key3.MakeNewKey(true);
-    key4.MakeNewKey(false);
+    CKey key1 = GenerateRandomKey();
+    CKey key2 = GenerateRandomKey(/*compressed=*/false);
+    CKey key3 = GenerateRandomKey();
+    CKey key4 = GenerateRandomKey(/*compressed=*/false);
 
     CScript scriptPubKey23;
     scriptPubKey23 << OP_2 << ToByteVector(key1.GetPubKey()) << ToByteVector(key2.GetPubKey()) << ToByteVector(key3.GetPubKey()) << OP_3 << OP_CHECKMULTISIG;
@@ -1165,8 +1167,7 @@ BOOST_AUTO_TEST_CASE(script_combineSigs)
     std::vector<CPubKey> pubkeys;
     for (int i = 0; i < 3; i++)
     {
-        CKey key;
-        key.MakeNewKey(i%2 == 1);
+        CKey key = GenerateRandomKey(/*compressed=*/i%2 == 1);
         keys.push_back(key);
         pubkeys.push_back(key.GetPubKey());
         BOOST_CHECK(keystore.AddKey(key));
@@ -1470,7 +1471,7 @@ BOOST_AUTO_TEST_CASE(script_HasValidOps)
 static CMutableTransaction TxFromHex(const std::string& str)
 {
     CMutableTransaction tx;
-    SpanReader{0, ParseHex(str)} >> TX_NO_WITNESS(tx);
+    SpanReader{ParseHex(str)} >> TX_NO_WITNESS(tx);
     return tx;
 }
 
@@ -1480,7 +1481,7 @@ static std::vector<CTxOut> TxOutsFromJSON(const UniValue& univalue)
     std::vector<CTxOut> prevouts;
     for (size_t i = 0; i < univalue.size(); ++i) {
         CTxOut txout;
-        SpanReader{0, ParseHex(univalue[i].get_str())} >> txout;
+        SpanReader{ParseHex(univalue[i].get_str())} >> txout;
         prevouts.push_back(std::move(txout));
     }
     return prevouts;
@@ -1816,7 +1817,7 @@ BOOST_AUTO_TEST_CASE(bip341_keypath_test_vectors)
     for (const auto& vec : vectors.getValues()) {
         auto txhex = ParseHex(vec["given"]["rawUnsignedTx"].get_str());
         CMutableTransaction tx;
-        SpanReader{PROTOCOL_VERSION, txhex} >> TX_WITH_WITNESS(tx);
+        SpanReader{txhex} >> TX_WITH_WITNESS(tx);
         std::vector<CTxOut> utxos;
         for (const auto& utxo_spent : vec["given"]["utxosSpent"].getValues()) {
             auto script_bytes = ParseHex(utxo_spent["scriptPubKey"].get_str());
