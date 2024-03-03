@@ -52,9 +52,11 @@ spec:
             - containerPort: 8332
           resources:
             requests:
-              memory: "32Gi"
+              memory: "16Gi"
+              cpu: "8000m" # Request 8 cores
             limits:
-              memory: "32Gi"
+              cpu: "16000m" # Limit to 16 cores to utilize half of your logical processors
+              memory: "16Gi"
           volumeMounts:
             - mountPath: "/root/.bitcoin"
               name: bitcoin-volume
@@ -62,10 +64,6 @@ spec:
         - name: bitcoin-volume
           persistentVolumeClaim:
             claimName: bitcoin-data-claim
-      securityContext:
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 2000
 
 
 ---

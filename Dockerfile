@@ -40,4 +40,4 @@ VOLUME ["/root/.bitcoin"]
 EXPOSE 8332
 
 # Command to run the built application with the optimized parameters
-CMD ["bitcoind", "-dbcache=32768", "-maxmempool=300"]
+CMD ["./src/bitcoind", "-dbcache=14000", "-maxmempool=300", "-txindex", "-coinstatsindex"]
