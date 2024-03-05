@@ -2,7 +2,7 @@ CREATE DATABASE "bitcoin";
 
 CREATE SCHEMA bitcoin;
 
-DROP TABLE IF EXISTS bitcoin.blocks CASCADE;
+DROP TABLE IF EXISTS blocks CASCADE;
 
 CREATE TABLE blocks
 (
@@ -86,110 +86,5 @@ CREATE TABLE blocks
     non_ordinals_count                               BIGINT,
     non_ordinals_size                                BIGINT,
     non_ordinals_vsize                               BIGINT,
-    non_ordinals_fees                                BIGINT,
-
-    utxo_set_value                                   BIGINT,
-    utxo_set_value_satoshi                           BIGINT,
-    utxo_set_value_less_than_one_day                 BIGINT,
-    utxo_set_value_less_than_one_week                BIGINT,
-    utxo_set_value_less_than_one_month               BIGINT,
-    utxo_set_value_less_than_three_months            BIGINT,
-    utxo_set_value_less_than_six_months              BIGINT,
-    utxo_set_value_less_than_one_year                BIGINT,
-    utxo_set_value_less_than_two_years               BIGINT,
-    utxo_set_value_less_than_three_years             BIGINT,
-    utxo_set_value_less_than_four_years              BIGINT,
-    utxo_set_value_less_than_five_years              BIGINT,
-    utxo_set_value_less_than_six_years               BIGINT,
-    utxo_set_value_less_than_seven_years             BIGINT,
-    utxo_set_value_less_than_eight_years             BIGINT,
-    utxo_set_value_less_than_nine_years              BIGINT,
-    utxo_set_value_less_than_ten_years               BIGINT,
-    utxo_set_value_less_than_eleven_years            BIGINT,
-    utxo_set_value_less_than_twelve_years            BIGINT,
-    utxo_set_value_less_than_thirteen_years          BIGINT,
-    utxo_set_value_less_than_fourteen_years          BIGINT,
-    utxo_set_value_less_than_fifteen_years           BIGINT,
-
-    utxo_set_count                                  BIGINT,
-    utxo_set_count_satoshi                          BIGINT,
-    utxo_set_count_less_than_one_day                BIGINT,
-    utxo_set_count_less_than_one_week               BIGINT,
-    utxo_set_count_less_than_one_month              BIGINT,
-    utxo_set_count_less_than_three_months           BIGINT,
-    utxo_set_count_less_than_six_months             BIGINT,
-    utxo_set_count_less_than_one_year               BIGINT,
-    utxo_set_count_less_than_two_years              BIGINT,
-    utxo_set_count_less_than_three_years            BIGINT,
-    utxo_set_count_less_than_four_years             BIGINT,
-    utxo_set_count_less_than_five_years             BIGINT,
-    utxo_set_count_less_than_six_years              BIGINT,
-    utxo_set_count_less_than_seven_years            BIGINT,
-    utxo_set_count_less_than_eight_years            BIGINT,
-    utxo_set_count_less_than_nine_years             BIGINT,
-    utxo_set_count_less_than_ten_years              BIGINT,
-    utxo_set_count_less_than_eleven_years           BIGINT,
-    utxo_set_count_less_than_twelve_years           BIGINT,
-    utxo_set_count_less_than_thirteen_years         BIGINT,
-    utxo_set_count_less_than_fourteen_years         BIGINT,
-    utxo_set_count_less_than_fifteen_years          BIGINT
+    non_ordinals_fees                                BIGINT
 );
-
-DROP TABLE IF EXISTS bitcoin.mempool_entries CASCADE;
-DROP TABLE IF EXISTS bitcoin.mempool_families CASCADE;
-
-
-CREATE TABLE bitcoin.mempool_entries
-(
-    txid                 TEXT PRIMARY KEY,
-    network              TEXT,
-    wtxid                TEXT,
-    fee                  BIGINT,
-    weight               BIGINT,
-
-    memory_usage         BIGINT,
-    entry_time           timestamp with time zone,
-
-    entry_height         BIGINT,
-    spends_coinbase      BOOLEAN,
-    sigop_cost           BIGINT,
-
-    fee_delta            BIGINT,
-    height_lockpoint     BIGINT,
-    time_lockpoint       timestamp with time zone,
-
-    descendants_count    BIGINT,
-    descendants_size     BIGINT,
-    descendants_fees     BIGINT,
-
-    ancestors_count      BIGINT,
-    ancestors_size       BIGINT,
-    ancestors_fees       BIGINT,
-    ancestors_sigop_cost BIGINT,
-
-    removal_reason       TEXT,
-    removal_time         timestamp with time zone
-);
-
-CREATE TABLE bitcoin.utxo_set_statistics
-(
-    primary_key         BIGSERIAL PRIMARY KEY,
-    stats_height        BIGINT,
-    stats_day           DATE,
-
-    output_height       BIGINT,
-    output_day          DATE,
-    output_days_count   BIGINT,
-    output_script_type  BIGINT,
-    output_is_coinbase  BOOLEAN,
-
-    outputs_count       BIGINT,
-    outputs_total_value BIGINT,
-    outputs_total_size  BIGINT
-);
-
-CREATE UNIQUE INDEX utxo_set_statistics_index
-    ON bitcoin.utxo_set_statistics (stats_day, output_height, output_script_type, output_is_coinbase);
-
-CREATE INDEX utxo_set_date_index
-    ON bitcoin.utxo_set_statistics (stats_day);

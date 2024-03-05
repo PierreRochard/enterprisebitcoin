@@ -3,7 +3,6 @@
 
 #include <chain.h>
 #include <coins.h>
-#include <shutdown.h>
 #include <validation.h>
 #include <consensus/tx_verify.h>
 #include <txmempool.h>
@@ -43,18 +42,7 @@ struct TransactionData {
 
 class BlockToSql {
 public:
-    BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, unsigned int flags,
-               CCoinsViewCursor *cursor);
-};
-
-class MempoolEntryToSql {
-public:
-    MempoolEntryToSql(CTxMemPoolEntry mempool_entry);
-};
-
-class RemoveMempoolEntry {
-public:
-    RemoveMempoolEntry(const uint256 hash, MemPoolRemovalReason reason);
+    BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, unsigned int flags);
 };
 
 #endif //BLOCK_TO_SQL_H

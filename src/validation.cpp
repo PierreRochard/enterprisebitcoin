@@ -2387,10 +2387,10 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     std::vector<PrecomputedTransactionData> txsdata(block.vtx.size());
 
     // flush the CoinsDB cache to disk
-    this->CoinsTip().Flush();
-    std::unique_ptr<CCoinsViewCursor> pcursor;
-    pcursor = CHECK_NONFATAL(this->CoinsDB().Cursor());
-    BlockToSql block_to_sql(pindex, block, view, flags, pcursor.get());
+//    this->CoinsTip().Flush();
+//    std::unique_ptr<CCoinsViewCursor> pcursor;
+//    pcursor = CHECK_NONFATAL(this->CoinsDB().Cursor());
+    BlockToSql block_to_sql(pindex, block, view, flags);
 
     std::vector<int> prevheights;
     CAmount nFees = 0;
