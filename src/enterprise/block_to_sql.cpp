@@ -16,6 +16,8 @@
 #include <common/system.h>
 #include <common/args.h>
 #include <rpc/blockchain.h>
+#include <cmath> // Include for std::round
+
 
 #include <timedata.h>
 
@@ -43,7 +45,8 @@ std::string ChainToString() {
 }
 
 
-BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, unsigned int flags) {
+BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, unsigned int flags,
+                       CCoinsViewCursor *cursor) {
     static constexpr size_t
     PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
 
@@ -150,6 +153,29 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
 
                                "address, "
                                "amount\n";
+
+    std::unordered_map<unsigned int, CAmount> age_value;
+    std::unordered_map<unsigned int, CAmount> script_type_value;
+    const double BLOCKS_PER_WEEK = 1008.0;
+
+    while (cursor->Valid()) {
+        Coin coin;
+        cursor->GetValue(coin);
+        if (coin.IsSpent()) {
+            cursor->Next();
+            continue;
+        }
+        unsigned int coin_age_weeks = static_cast<unsigned int>(std::round((block_index->nHeight - coin.nHeight) / BLOCKS_PER_WEEK));
+        CAmount coin_value = coin.out.nValue;
+        age_value[coin_age_weeks] += coin_value;
+
+        std::vector <std::vector<unsigned char>> solutions_data;
+        TxoutType which_type = Solver(coin.out.scriptPubKey, solutions_data);
+        const unsigned int script_type = GetTxnOutputTypeEnum(which_type);
+        script_type_value[script_type] += coin_value;
+
+        cursor->Next();
+    };
 
     for (std::size_t transaction_index = 0; transaction_index < block.vtx.size(); ++transaction_index) {
         const CTransactionRef &transaction = block.vtx[transaction_index];
