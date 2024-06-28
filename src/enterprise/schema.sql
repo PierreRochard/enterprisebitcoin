@@ -86,5 +86,7 @@ CREATE TABLE blocks
     non_ordinals_count                               BIGINT,
     non_ordinals_size                                BIGINT,
     non_ordinals_vsize                               BIGINT,
-    non_ordinals_fees                                BIGINT
+    non_ordinals_fees                                BIGINT,
+
+    old_coin_percentage                              DOUBLE PRECISION
 );
