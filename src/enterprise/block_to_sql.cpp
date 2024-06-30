@@ -47,8 +47,7 @@ std::string ChainToString() {
 
 BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, unsigned int flags,
                        CCoinsViewCursor *cursor) {
-    static constexpr size_t
-    PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
+    static constexpr size_t PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
 
     auto &dotenv = env;
     dotenv.config();
@@ -154,38 +153,6 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                                "address, "
                                "amount\n";
 
-    const double BLOCKS_PER_WEEK = 1008.0;  // Define number of blocks per week based on your blockchain's block time
-    const unsigned int AGE_THRESHOLD_WEEKS = 52;  // Define the age threshold in weeks
-
-    CAmount total_value = 0;  // Variable to store the total value of all coins
-    CAmount old_coin_value = 0;  // Variable to store the value of coins older than 52 weeks
-
-    while (cursor->Valid()) {
-        Coin coin;
-        cursor->GetValue(coin);
-        if (coin.IsSpent()) {
-            cursor->Next();
-            continue;
-        }
-
-        // Calculate the coin age in weeks
-        unsigned int coin_age_weeks = static_cast<unsigned int>(std::round((block_index->nHeight - coin.nHeight) / BLOCKS_PER_WEEK));
-        CAmount coin_value = coin.out.nValue;
-        total_value += coin_value;  // Accumulate total value of all coins
-
-        // Accumulate value of old coins
-        if (coin_age_weeks > AGE_THRESHOLD_WEEKS) {
-            old_coin_value += coin_value;
-        }
-
-        cursor->Next();
-    }
-
-    unsigned int old_coin_percentage = 0;
-    if (total_value > 0) {
-        double percentage = (old_coin_value / static_cast<double>(total_value)) * 100.0;
-        old_coin_percentage = static_cast<unsigned int>(percentage);  // Cast the result to an integer
-    }
 
     for (std::size_t transaction_index = 0; transaction_index < block.vtx.size(); ++transaction_index) {
         const CTransactionRef &transaction = block.vtx[transaction_index];
@@ -628,9 +595,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "non_ordinals_count , "
                              "non_ordinals_size , "
                              "non_ordinals_vsize , "
-                             "non_ordinals_fees,"
+                             "non_ordinals_fees"
 
-                            "old_coin_percentage"
                              ") "
 
                              "VALUES "
@@ -716,9 +682,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
                              "$64, "  // non_ordinals_count
                              "$65, "  // non_ordinals_size
                              "$66, "  // non_ordinals_vsize
-                             "$67, "  // non_ordinals_fees
-
-                             "$68 " // old_coin_percentage
+                             "$67 "  // non_ordinals_fees
 
                              ") ON CONFLICT DO NOTHING ;"
     );
@@ -804,9 +768,8 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             non_ordinals_count,
             non_ordinals_size,
             non_ordinals_vsize,
-            non_ordinals_fees,
+            non_ordinals_fees
 
-            old_coin_percentage
     )};
     w.commit();
 }

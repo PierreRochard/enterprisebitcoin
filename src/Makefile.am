@@ -159,6 +159,7 @@ BITCOIN_CORE_H = \
   enterprise/dotenv.h \
   enterprise/enterprise_notification_interface.h \
   enterprise/utilities.h \
+  enterprise/utxo_set_to_sql.h \
   dbwrapper.h \
   deploymentinfo.h \
   deploymentstatus.h \
@@ -395,6 +396,7 @@ libbitcoin_node_a_SOURCES = \
   dbwrapper.cpp \
   deploymentstatus.cpp \
   enterprise/block_to_sql.cpp \
+  enterprise/utxo_set_to_sql.cpp \
   flatfile.cpp \
   headerssync.cpp \
   httprpc.cpp \
