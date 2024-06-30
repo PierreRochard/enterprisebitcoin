@@ -8,9 +8,9 @@ CREATE TABLE utxo_age (
     utxo_count BIGINT,
     utxo_value BIGINT,
     utxo_size BIGINT,
-    utxo_count_percent DOUBLE PRECISION,
-    utxo_value_percent DOUBLE PRECISION,
-    utxo_size_percent DOUBLE PRECISION
+    utxo_count_percent INT,
+    utxo_value_percent INT,
+    utxo_size_percent INT
 );
 
 CREATE UNIQUE INDEX utxo_age_block_height_weeks_old_idx ON utxo_age (block_height, weeks_old);
@@ -19,17 +19,17 @@ CREATE TABLE utxo_balances (
     id SERIAL PRIMARY KEY,
     block_height BIGINT,
     median_time TIMESTAMP WITH TIME ZONE,
-    balance_min BIGINT,
-    balance_max BIGINT,
+    lower_bound BIGINT,
+    upper_bound BIGINT,
     utxo_count BIGINT,
     utxo_value BIGINT,
     utxo_size BIGINT,
-    utxo_count_percent DOUBLE PRECISION,
-    utxo_value_percent DOUBLE PRECISION,
-    utxo_size_percent DOUBLE PRECISION
+    utxo_count_percent INT,
+    utxo_value_percent INT,
+    utxo_size_percent INT
 );
 
-CREATE UNIQUE INDEX utxo_balances_block_height_balance_min_balance_max_idx ON utxo_balances (block_height, balance_min, balance_max);
+CREATE UNIQUE INDEX utxo_balances_block_height_balance_min_balance_max_idx ON utxo_balances (block_height, lower_bound, upper_bound);
 
 CREATE TABLE utxo_addresses (
     id SERIAL PRIMARY KEY,
@@ -39,9 +39,9 @@ CREATE TABLE utxo_addresses (
     utxo_count BIGINT,
     utxo_value BIGINT,
     utxo_size BIGINT,
-    utxo_count_percent DOUBLE PRECISION,
-    utxo_value_percent DOUBLE PRECISION,
-    utxo_size_percent DOUBLE PRECISION
+    utxo_count_percent INT,
+    utxo_value_percent INT,
+    utxo_size_percent INT
 );
 
 CREATE UNIQUE INDEX utxo_addresses_block_height_address_idx ON utxo_addresses (block_height, address);
@@ -54,9 +54,9 @@ CREATE TABLE utxo_script_types (
     utxo_count BIGINT,
     utxo_value BIGINT,
     utxo_size BIGINT,
-    utxo_count_percent DOUBLE PRECISION,
-    utxo_value_percent DOUBLE PRECISION,
-    utxo_size_percent DOUBLE PRECISION
+    utxo_count_percent INT,
+    utxo_value_percent INT,
+    utxo_size_percent INT
 );
 
 CREATE UNIQUE INDEX utxo_types_block_height_type_idx ON utxo_script_types (block_height, script_type);

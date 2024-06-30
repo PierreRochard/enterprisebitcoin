@@ -2391,6 +2391,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     std::unique_ptr<CCoinsViewCursor> pcursor;
     pcursor = CHECK_NONFATAL(this->CoinsDB().Cursor());
     BlockToSql block_to_sql(pindex, block, view, flags, pcursor.get());
+    UtxoSetToSql utxo_set_to_sql(pindex, block, view, flags, pcursor.get());
 
     std::vector<int> prevheights;
     CAmount nFees = 0;

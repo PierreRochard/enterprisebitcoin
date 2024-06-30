@@ -125,24 +125,81 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
             w,
             {"utxo_age"},
             {"block_height", "median_time", "weeks_old", "utxo_count", "utxo_value",
-                                     "utxo_size", "utxo_value_percent", "utxo_count_percent", "utxo_size_percent"})};
+                                     "utxo_size", "utxo_count_percent", "utxo_value_percent", "utxo_size_percent"})};
     for (const auto &entry : utxo_age_map) {
         unsigned int weeks_old = entry.first;
         CAmount utxo_value = std::get<0>(entry.second);
         unsigned int utxo_count = std::get<1>(entry.second);
         int64_t utxo_size = std::get<2>(entry.second);
 
-        double value_percentage = (utxo_value / static_cast<double>(total_value)) * 100.0;
-        double count_percentage = (utxo_count / static_cast<double>(total_count)) * 100.0;
-        double size_percentage = (utxo_size / static_cast<double>(total_size)) * 100.0;
+        double value_percentage = static_cast<unsigned int>((utxo_value / static_cast<double>(total_value)) * 100.0);
+        double count_percentage = static_cast<unsigned int>((utxo_count / static_cast<double>(total_count)) * 100.0);
+        double size_percentage = static_cast<unsigned int>((utxo_size / static_cast<double>(total_size)) * 100.0);
 
-        stream << block_height << median_time << weeks_old << utxo_count << utxo_value << utxo_size << value_percentage << count_percentage << size_percentage;
-    }
+        stream << block_height << median_time << weeks_old << utxo_count << utxo_value << utxo_size << count_percentage << value_percentage << size_percentage;
+    };
     stream.complete();
 
-//    unsigned int old_coin_percentage = 0;
-//    if (total_value > 0) {
-//        double percentage = (old_coin_value / static_cast<double>(total_value)) * 100.0;
-//        old_coin_percentage = static_cast<unsigned int>(percentage);  // Cast the result to an integer
-//    }
+    pqxx::stream_to stream2{pqxx::stream_to::table(
+            w,
+            {"utxo_balances"},
+            {"block_height", "median_time", "lower_bound", "upper_bound", "utxo_count", "utxo_value",
+                                     "utxo_size", "utxo_count_percent", "utxo_value_percent", "utxo_size_percent"})};
+    for (const auto &entry : uxto_balance_map) {
+        CAmount lower_bound = std::get<0>(entry.first);
+        CAmount upper_bound = std::get<1>(entry.first);
+        CAmount utxo_value = std::get<0>(entry.second);
+        unsigned int utxo_count = std::get<1>(entry.second);
+        int64_t utxo_size = std::get<2>(entry.second);
+
+        double value_percentage = static_cast<unsigned int>((utxo_value / static_cast<double>(total_value)) * 100.0);
+        double count_percentage = static_cast<unsigned int>((utxo_count / static_cast<double>(total_count)) * 100.0);
+        double size_percentage = static_cast<unsigned int>((utxo_size / static_cast<double>(total_size)) * 100.0);
+
+        stream2 << block_height << median_time << lower_bound << upper_bound << utxo_count << utxo_value << utxo_size << count_percentage << value_percentage << size_percentage;
+    }
+    stream2.complete();
+
+    pqxx::stream_to stream3{pqxx::stream_to::table(
+            w,
+            {"utxo_addresses"},
+            {"block_height", "median_time", "address", "utxo_count", "utxo_value",
+                                     "utxo_size", "utxo_count_percent", "utxo_value_percent", "utxo_size_percent"})};
+    for (const auto &entry : utxo_address_map) {
+        std::string address = entry.first;
+        CAmount utxo_value = std::get<0>(entry.second);
+        unsigned int utxo_count = std::get<1>(entry.second);
+        int64_t utxo_size = std::get<2>(entry.second);
+
+        double value_percentage = static_cast<unsigned int>((utxo_value / static_cast<double>(total_value)) * 100.0);
+        double count_percentage = static_cast<unsigned int>((utxo_count / static_cast<double>(total_count)) * 100.0);
+        double size_percentage = static_cast<unsigned int>((utxo_size / static_cast<double>(total_size)) * 100.0);
+
+        stream3 << block_height << median_time << address << utxo_count << utxo_value << utxo_size << count_percentage << value_percentage << size_percentage;
+    };
+    stream3.complete();
+
+    pqxx::stream_to stream4{pqxx::stream_to::table(
+            w,
+            {"utxo_script_types"},
+            {"block_height", "median_time", "script_type", "utxo_count", "utxo_value",
+                                     "utxo_size", "utxo_count_percent", "utxo_value_percent", "utxo_size_percent"})};
+    for (const auto &entry : utxo_script_type_map) {
+        std::string script_type = entry.first;
+        CAmount utxo_value = std::get<0>(entry.second);
+        unsigned int utxo_count = std::get<1>(entry.second);
+        int64_t utxo_size = std::get<2>(entry.second);
+
+        double value_percentage = static_cast<unsigned int>((utxo_value / static_cast<double>(total_value)) * 100.0);
+        double count_percentage = static_cast<unsigned int>((utxo_count / static_cast<double>(total_count)) * 100.0);
+        double size_percentage = static_cast<unsigned int>((utxo_size / static_cast<double>(total_size)) * 100.0);
+
+        stream4 << block_height << median_time << script_type << utxo_count << utxo_value << utxo_size << count_percentage << value_percentage << size_percentage;
+    };
+    stream4.complete();
+
+    w.commit();
+
+    LogPrintf("UtxoSetToSql: Block %d, %d UTXOs, %d bytes\n", block_height, total_count, total_size);
+
 }
