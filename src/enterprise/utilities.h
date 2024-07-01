@@ -17,7 +17,7 @@
 #include <assert.h>
 #include <string.h>
 
-unsigned int GetTxnOutputTypeEnum(TxoutType t) {
+inline unsigned int GetTxnOutputTypeEnum(TxoutType t) {
     switch (t) {
         case TxoutType::NONSTANDARD:
             return 1;

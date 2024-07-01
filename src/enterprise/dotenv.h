@@ -1,4 +1,6 @@
 // From https://github.com/adeharo9/cpp-dotenv/blob/master/dotenv.h
+#ifndef ENTERPRISE_DOTENV_H
+#define ENTERPRISE_DOTENV_H
 
 #pragma once
 
@@ -17,7 +19,7 @@
 #define  DEBUG_EXIT(x)
 #endif
 
-namespace dotenv
+inline namespace dotenv
 {
     class syntax_error: public std::runtime_error
     {
@@ -463,3 +465,4 @@ namespace dotenv
 
     dotenv& env = dotenv::instance().config();
 }
+#endif // ENTERPRISE_DOTENV_H

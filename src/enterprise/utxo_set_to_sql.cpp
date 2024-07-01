@@ -27,7 +27,6 @@
 #include <enterprise/dotenv.h>
 #include <pqxx/pqxx>
 
-using namespace dotenv;
 
 UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, unsigned int flags,
                            CCoinsViewCursor *cursor) {

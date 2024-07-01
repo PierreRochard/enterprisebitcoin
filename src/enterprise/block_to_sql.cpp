@@ -27,8 +27,6 @@
 #include <enterprise/dotenv.h>
 #include <pqxx/pqxx>
 
-using namespace dotenv;
-
 
 std::string ChainToString() {
     switch (gArgs.GetChainType()) {
