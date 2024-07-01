@@ -16,7 +16,9 @@
 #include <common/system.h>
 #include <common/args.h>
 #include <rpc/blockchain.h>
-#include <cmath> // Include for std::round
+#include <cmath>
+#include <ctime>
+#include <string>
 
 
 #include <timedata.h>
@@ -32,7 +34,15 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
                            CCoinsViewCursor *cursor) {
 
     int block_height = block_index->nHeight;
-    int64_t median_time = block_index->GetMedianTimePast();
+
+    int64_t median_time_int = block_index->GetMedianTimePast();
+    time_t median_time_time = static_cast<time_t>(median_time_int);
+    struct tm *timeinfo;
+    timeinfo = localtime(&median_time_time);
+    char buffer[80];
+    strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", timeinfo);
+
+    std::string median_time = std::string(buffer);
 
     CAmount total_value = 0;
     unsigned int total_count = 0;
@@ -60,7 +70,6 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         int64_t output_size = GetSerializeSize(coin.out);
         static constexpr size_t PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
         int64_t utxo_size = output_size + PER_UTXO_OVERHEAD;
-        total_size += utxo_size;
 
         CTxDestination address;
         std::string address_string = "no-address";
@@ -131,11 +140,11 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         unsigned int utxo_count = std::get<1>(entry.second);
         int64_t utxo_size = std::get<2>(entry.second);
 
-        double value_percentage = static_cast<unsigned int>((utxo_value / static_cast<double>(total_value)) * 100.0);
-        double count_percentage = static_cast<unsigned int>((utxo_count / static_cast<double>(total_count)) * 100.0);
-        double size_percentage = static_cast<unsigned int>((utxo_size / static_cast<double>(total_size)) * 100.0);
+        double value_percentage = std::round(static_cast<double>(utxo_value) / total_value * 10000.0) / 100.0;
+        double count_percentage = std::round(static_cast<double>(utxo_count) / total_count * 10000.0) / 100.0;
+        double size_percentage = std::round(static_cast<double>(utxo_size) / total_size * 10000.0) / 100.0;
 
-        stream << block_height << median_time << weeks_old << utxo_count << utxo_value << utxo_size << count_percentage << value_percentage << size_percentage;
+        stream.write_values(block_height, median_time, weeks_old, utxo_count, utxo_value, utxo_size, count_percentage, value_percentage, size_percentage);
     };
     stream.complete();
 
@@ -151,11 +160,11 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         unsigned int utxo_count = std::get<1>(entry.second);
         int64_t utxo_size = std::get<2>(entry.second);
 
-        double value_percentage = static_cast<unsigned int>((utxo_value / static_cast<double>(total_value)) * 100.0);
-        double count_percentage = static_cast<unsigned int>((utxo_count / static_cast<double>(total_count)) * 100.0);
-        double size_percentage = static_cast<unsigned int>((utxo_size / static_cast<double>(total_size)) * 100.0);
+        double value_percentage = std::round(static_cast<double>(utxo_value) / total_value * 10000.0) / 100.0;
+        double count_percentage = std::round(static_cast<double>(utxo_count) / total_count * 10000.0) / 100.0;
+        double size_percentage = std::round(static_cast<double>(utxo_size) / total_size * 10000.0) / 100.0;
 
-        stream2 << block_height << median_time << lower_bound << upper_bound << utxo_count << utxo_value << utxo_size << count_percentage << value_percentage << size_percentage;
+        stream2.write_values(block_height, median_time, lower_bound, upper_bound, utxo_count, utxo_value, utxo_size, count_percentage, value_percentage, size_percentage);
     }
     stream2.complete();
 
@@ -170,11 +179,11 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         unsigned int utxo_count = std::get<1>(entry.second);
         int64_t utxo_size = std::get<2>(entry.second);
 
-        double value_percentage = static_cast<unsigned int>((utxo_value / static_cast<double>(total_value)) * 100.0);
-        double count_percentage = static_cast<unsigned int>((utxo_count / static_cast<double>(total_count)) * 100.0);
-        double size_percentage = static_cast<unsigned int>((utxo_size / static_cast<double>(total_size)) * 100.0);
+        double value_percentage = std::round(static_cast<double>(utxo_value) / total_value * 10000.0) / 100.0;
+        double count_percentage = std::round(static_cast<double>(utxo_count) / total_count * 10000.0) / 100.0;
+        double size_percentage = std::round(static_cast<double>(utxo_size) / total_size * 10000.0) / 100.0;
 
-        stream3 << block_height << median_time << address << utxo_count << utxo_value << utxo_size << count_percentage << value_percentage << size_percentage;
+        stream3.write_values(block_height, median_time, address, utxo_count, utxo_value, utxo_size, count_percentage, value_percentage, size_percentage);
     };
     stream3.complete();
 
@@ -189,11 +198,11 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         unsigned int utxo_count = std::get<1>(entry.second);
         int64_t utxo_size = std::get<2>(entry.second);
 
-        double value_percentage = static_cast<unsigned int>((utxo_value / static_cast<double>(total_value)) * 100.0);
-        double count_percentage = static_cast<unsigned int>((utxo_count / static_cast<double>(total_count)) * 100.0);
-        double size_percentage = static_cast<unsigned int>((utxo_size / static_cast<double>(total_size)) * 100.0);
+        double value_percentage = std::round(static_cast<double>(utxo_value) / total_value * 10000.0) / 100.0;
+        double count_percentage = std::round(static_cast<double>(utxo_count) / total_count * 10000.0) / 100.0;
+        double size_percentage = std::round(static_cast<double>(utxo_size) / total_size * 10000.0) / 100.0;
 
-        stream4 << block_height << median_time << script_type << utxo_count << utxo_value << utxo_size << count_percentage << value_percentage << size_percentage;
+        stream4.write_values(block_height, median_time, script_type, utxo_count, utxo_value, utxo_size, count_percentage, value_percentage, size_percentage);
     };
     stream4.complete();
 

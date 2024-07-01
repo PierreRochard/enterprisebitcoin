@@ -3,14 +3,14 @@
 CREATE TABLE utxo_age (
     id SERIAL PRIMARY KEY,
     block_height BIGINT,
-    median_time TIMESTAMP WITH TIME ZONE,
+    median_time TIMESTAMP,
     weeks_old BIGINT,
     utxo_count BIGINT,
     utxo_value BIGINT,
     utxo_size BIGINT,
-    utxo_count_percent INT,
-    utxo_value_percent INT,
-    utxo_size_percent INT
+    utxo_count_percent FLOAT,
+    utxo_value_percent FLOAT,
+    utxo_size_percent FLOAT
 );
 
 CREATE UNIQUE INDEX utxo_age_block_height_weeks_old_idx ON utxo_age (block_height, weeks_old);
@@ -18,15 +18,15 @@ CREATE UNIQUE INDEX utxo_age_block_height_weeks_old_idx ON utxo_age (block_heigh
 CREATE TABLE utxo_balances (
     id SERIAL PRIMARY KEY,
     block_height BIGINT,
-    median_time TIMESTAMP WITH TIME ZONE,
+    median_time TIMESTAMP,
     lower_bound BIGINT,
     upper_bound BIGINT,
     utxo_count BIGINT,
     utxo_value BIGINT,
     utxo_size BIGINT,
-    utxo_count_percent INT,
-    utxo_value_percent INT,
-    utxo_size_percent INT
+    utxo_count_percent FLOAT,
+    utxo_value_percent FLOAT,
+    utxo_size_percent FLOAT
 );
 
 CREATE UNIQUE INDEX utxo_balances_block_height_balance_min_balance_max_idx ON utxo_balances (block_height, lower_bound, upper_bound);
@@ -34,14 +34,14 @@ CREATE UNIQUE INDEX utxo_balances_block_height_balance_min_balance_max_idx ON ut
 CREATE TABLE utxo_addresses (
     id SERIAL PRIMARY KEY,
     block_height BIGINT,
-    median_time TIMESTAMP WITH TIME ZONE,
+    median_time TIMESTAMP,
     address TEXT,
     utxo_count BIGINT,
     utxo_value BIGINT,
     utxo_size BIGINT,
-    utxo_count_percent INT,
-    utxo_value_percent INT,
-    utxo_size_percent INT
+    utxo_count_percent FLOAT,
+    utxo_value_percent FLOAT,
+    utxo_size_percent FLOAT
 );
 
 CREATE UNIQUE INDEX utxo_addresses_block_height_address_idx ON utxo_addresses (block_height, address);
@@ -49,14 +49,14 @@ CREATE UNIQUE INDEX utxo_addresses_block_height_address_idx ON utxo_addresses (b
 CREATE TABLE utxo_script_types (
     id SERIAL PRIMARY KEY,
     block_height BIGINT,
-    median_time TIMESTAMP WITH TIME ZONE,
+    median_time TIMESTAMP,
     script_type TEXT,
     utxo_count BIGINT,
     utxo_value BIGINT,
     utxo_size BIGINT,
-    utxo_count_percent INT,
-    utxo_value_percent INT,
-    utxo_size_percent INT
+    utxo_count_percent FLOAT,
+    utxo_value_percent FLOAT,
+    utxo_size_percent FLOAT
 );
 
 CREATE UNIQUE INDEX utxo_types_block_height_type_idx ON utxo_script_types (block_height, script_type);
