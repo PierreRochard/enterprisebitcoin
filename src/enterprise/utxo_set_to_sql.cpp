@@ -49,9 +49,33 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
     int64_t total_size = 0;
 
     std::map<unsigned int, std::tuple<CAmount, unsigned int, int64_t>> utxo_age_map;
-    std::map<std::array<CAmount, 2>, std::tuple<CAmount, unsigned int, int64_t>> uxto_balance_map;
+    std::map<std::array<CAmount, 2>, std::tuple<CAmount, unsigned int, int64_t>> utxo_balance_map;
+    std::map<std::array<int64_t, 2>, std::tuple<CAmount, unsigned int, int64_t>> utxo_balance_usd_map;
     std::map<std::string, std::tuple<CAmount, unsigned int, int64_t>> utxo_address_map;
     std::map<std::string, std::tuple<CAmount, unsigned int, int64_t>> utxo_script_type_map;
+
+
+    auto &dotenv = env;
+    dotenv.config();
+
+    std::stringstream connStream;
+    connStream << "dbname = "
+               << dotenv["PGDB"]
+               << " user = "
+               << dotenv["PGUSER"]
+               << " password = "
+               << dotenv["PGPASSWORD"]
+               << " hostaddr = "
+               << dotenv["PGHOST"]
+               << " port = "
+               << dotenv["PGPORT"];
+    pqxx::connection c(connStream.str());
+
+    pqxx::work w(c);
+    pqxx::row r = w.exec1("SELECT price FROM prices WHERE date = '" + median_time + "'");
+    w.commit();
+
+    double usd_price = r[0].as<double>();
 
 
     while (cursor->Valid()) {
@@ -93,10 +117,18 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
 
         CAmount lowerBound = std::pow(10, static_cast<CAmount>(std::log10(coin_value)));
         CAmount upperBound = lowerBound * 10;
-        auto &balance_tuple = uxto_balance_map[{lowerBound, upperBound}];
+        auto &balance_tuple = utxo_balance_map[{lowerBound, upperBound}];
         std::get<0>(balance_tuple) += coin_value;
         std::get<1>(balance_tuple) += 1;
         std::get<2>(balance_tuple) += utxo_size;
+
+        double usd_value = static_cast<double>(coin_value) / 100000000.0 * usd_price;
+        int64_t lowerBoundUsd = static_cast<int64_t>(std::pow(10, static_cast<int64_t>(std::log10(usd_value))));
+        int64_t upperBoundUsd = lowerBoundUsd * 10;
+        auto &balance_usd_tuple = utxo_balance_usd_map[{lowerBoundUsd, upperBoundUsd}];
+        std::get<0>(balance_usd_tuple) += usd_value;
+        std::get<1>(balance_usd_tuple) += 1;
+        std::get<2>(balance_usd_tuple) += utxo_size;
 
         auto &address_tuple = utxo_address_map[address_string];
         std::get<0>(address_tuple) += coin_value;
@@ -110,24 +142,6 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
 
         cursor->Next();
     }
-
-    auto &dotenv = env;
-    dotenv.config();
-
-    std::stringstream connStream;
-    connStream << "dbname = "
-               << dotenv["PGDB"]
-               << " user = "
-               << dotenv["PGUSER"]
-               << " password = "
-               << dotenv["PGPASSWORD"]
-               << " hostaddr = "
-               << dotenv["PGHOST"]
-               << " port = "
-               << dotenv["PGPORT"];
-    pqxx::connection c(connStream.str());
-
-    pqxx::work w(c);
 
     pqxx::stream_to stream{pqxx::stream_to::table(
             w,
@@ -153,7 +167,7 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
             {"utxo_balances"},
             {"block_height", "median_time", "lower_bound", "upper_bound", "utxo_count", "utxo_value",
                                      "utxo_size", "utxo_count_percent", "utxo_value_percent", "utxo_size_percent"})};
-    for (const auto &entry : uxto_balance_map) {
+    for (const auto &entry : utxo_balance_map) {
         CAmount lower_bound = std::get<0>(entry.first);
         CAmount upper_bound = std::get<1>(entry.first);
         CAmount utxo_value = std::get<0>(entry.second);
@@ -167,6 +181,26 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         stream2.write_values(block_height, median_time, lower_bound, upper_bound, utxo_count, utxo_value, utxo_size, count_percentage, value_percentage, size_percentage);
     }
     stream2.complete();
+
+    pqxx::stream_to stream2b{pqxx::stream_to::table(
+            w,
+            {"utxo_balances_usd"},
+            {"block_height", "median_time", "lower_bound", "upper_bound", "utxo_count", "utxo_value",
+                                     "utxo_size", "utxo_count_percent", "utxo_value_percent", "utxo_size_percent"})};
+
+    for (const auto &entry : utxo_balance_usd_map) {
+        int64_t lower_bound = std::get<0>(entry.first);
+        int64_t upper_bound = std::get<1>(entry.first);
+        double utxo_value = std::get<0>(entry.second);
+        unsigned int utxo_count = std::get<1>(entry.second);
+        int64_t utxo_size = std::get<2>(entry.second);
+
+        double value_percentage = std::round(static_cast<double>(utxo_value) / total_value * 10000.0) / 100.0;
+        double count_percentage = std::round(static_cast<double>(utxo_count) / total_count * 10000.0) / 100.0;
+        double size_percentage = std::round(static_cast<double>(utxo_size) / total_size * 10000.0) / 100.0;
+
+        stream2b.write_values(block_height, median_time, lower_bound, upper_bound, utxo_count, utxo_value, utxo_size, count_percentage, value_percentage, size_percentage);
+    }
 
     pqxx::stream_to stream3{pqxx::stream_to::table(
             w,
