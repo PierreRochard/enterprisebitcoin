@@ -51,7 +51,6 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
     std::map<unsigned int, std::tuple<CAmount, unsigned int, int64_t>> utxo_age_map;
     std::map<std::array<CAmount, 2>, std::tuple<CAmount, unsigned int, int64_t>> utxo_balance_map;
     std::map<std::array<int64_t, 2>, std::tuple<CAmount, unsigned int, int64_t>> utxo_balance_usd_map;
-    std::map<std::string, std::tuple<CAmount, unsigned int, int64_t>> utxo_address_map;
     std::map<std::string, std::tuple<CAmount, unsigned int, int64_t>> utxo_script_type_map;
 
 
@@ -72,7 +71,7 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
     pqxx::connection c(connStream.str());
 
     pqxx::work w1(c);
-//    "SELECT price FROM prices WHERE day = '" + median_time + "';"
+
     pqxx::result r = w1.exec("SELECT price FROM prices WHERE day = '" + median_time + "';");
     LogPrintf("UtxoSetToSql: USD Price Query: %s\n", "SELECT price FROM prices WHERE day = '" + median_time + "';");
     w1.commit();
@@ -97,13 +96,6 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         int64_t output_size = GetSerializeSize(coin.out);
         static constexpr size_t PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
         int64_t utxo_size = output_size + PER_UTXO_OVERHEAD;
-
-        CTxDestination address;
-        std::string address_string = "no-address";
-        bool has_address = ExtractDestination(coin.out.scriptPubKey, address);
-        if (has_address) {
-            address_string = EncodeDestination(address);
-        };
 
         std::vector <std::vector<unsigned char>> solutions_data;
         TxoutType which_type = Solver(coin.out.scriptPubKey, solutions_data);
@@ -134,11 +126,6 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         std::get<0>(balance_usd_tuple) += usd_value;
         std::get<1>(balance_usd_tuple) += 1;
         std::get<2>(balance_usd_tuple) += utxo_size;
-
-        auto &address_tuple = utxo_address_map[address_string];
-        std::get<0>(address_tuple) += coin_value;
-        std::get<1>(address_tuple) += 1;
-        std::get<2>(address_tuple) += utxo_size;
 
         auto &script_type_tuple = utxo_script_type_map[script_type];
         std::get<0>(script_type_tuple) += coin_value;
@@ -207,25 +194,6 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         stream2b.write_values(block_height, median_time, lower_bound, upper_bound, utxo_count, utxo_value, utxo_size, count_percentage, value_percentage, size_percentage);
     }
     stream2b.complete();
-
-    pqxx::stream_to stream3{pqxx::stream_to::table(
-            w,
-            {"utxo_addresses"},
-            {"block_height", "median_time", "address", "utxo_count", "utxo_value",
-                                     "utxo_size", "utxo_count_percent", "utxo_value_percent", "utxo_size_percent"})};
-    for (const auto &entry : utxo_address_map) {
-        std::string address = entry.first;
-        CAmount utxo_value = std::get<0>(entry.second);
-        unsigned int utxo_count = std::get<1>(entry.second);
-        int64_t utxo_size = std::get<2>(entry.second);
-
-        double value_percentage = std::round(static_cast<double>(utxo_value) / total_value * 10000.0) / 100.0;
-        double count_percentage = std::round(static_cast<double>(utxo_count) / total_count * 10000.0) / 100.0;
-        double size_percentage = std::round(static_cast<double>(utxo_size) / total_size * 10000.0) / 100.0;
-
-        stream3.write_values(block_height, median_time, address, utxo_count, utxo_value, utxo_size, count_percentage, value_percentage, size_percentage);
-    };
-    stream3.complete();
 
     pqxx::stream_to stream4{pqxx::stream_to::table(
             w,
