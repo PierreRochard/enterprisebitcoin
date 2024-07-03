@@ -6,7 +6,6 @@
 #include <logging.h>
 #include <pubkey.h>
 #include <primitives/block.h>
-#include <rpc/blockchain.h>
 #include <script/interpreter.h>
 #include <serialize.h>
 #include <validation.h>
@@ -45,6 +44,7 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
     std::string median_time = std::string(buffer);
 
     CAmount total_value = 0;
+    double total_usd_value = 0;
     unsigned int total_count = 0;
     int64_t total_size = 0;
 
@@ -71,13 +71,16 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
                << dotenv["PGPORT"];
     pqxx::connection c(connStream.str());
 
+    pqxx::work w1(c);
+//    "SELECT price FROM prices WHERE day = '" + median_time + "';"
+    pqxx::result r = w1.exec("SELECT price FROM prices WHERE day = '" + median_time + "';");
+    LogPrintf("UtxoSetToSql: USD Price Query: %s\n", "SELECT price FROM prices WHERE day = '" + median_time + "';");
+    w1.commit();
+
+    double usd_price = r[0][0].as<double>();
+    LogPrintf("UtxoSetToSql: USD Price: %f\n", usd_price);
+
     pqxx::work w(c);
-    pqxx::row r = w.exec1("SELECT price FROM prices WHERE date = '" + median_time + "'");
-    w.commit();
-
-    double usd_price = r[0].as<double>();
-
-
     while (cursor->Valid()) {
         Coin coin;
         cursor->GetValue(coin);
@@ -123,7 +126,9 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         std::get<2>(balance_tuple) += utxo_size;
 
         double usd_value = static_cast<double>(coin_value) / 100000000.0 * usd_price;
-        int64_t lowerBoundUsd = static_cast<int64_t>(std::pow(10, static_cast<int64_t>(std::log10(usd_value))));
+        total_usd_value += usd_value;
+
+        int64_t lowerBoundUsd = std::pow(10, static_cast<int64_t>(std::log10(usd_value)));
         int64_t upperBoundUsd = lowerBoundUsd * 10;
         auto &balance_usd_tuple = utxo_balance_usd_map[{lowerBoundUsd, upperBoundUsd}];
         std::get<0>(balance_usd_tuple) += usd_value;
@@ -195,12 +200,13 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         unsigned int utxo_count = std::get<1>(entry.second);
         int64_t utxo_size = std::get<2>(entry.second);
 
-        double value_percentage = std::round(static_cast<double>(utxo_value) / total_value * 10000.0) / 100.0;
+        double value_percentage = std::round(static_cast<double>(utxo_value) / total_usd_value * 10000.0) / 100.0;
         double count_percentage = std::round(static_cast<double>(utxo_count) / total_count * 10000.0) / 100.0;
         double size_percentage = std::round(static_cast<double>(utxo_size) / total_size * 10000.0) / 100.0;
 
         stream2b.write_values(block_height, median_time, lower_bound, upper_bound, utxo_count, utxo_value, utxo_size, count_percentage, value_percentage, size_percentage);
     }
+    stream2b.complete();
 
     pqxx::stream_to stream3{pqxx::stream_to::table(
             w,
