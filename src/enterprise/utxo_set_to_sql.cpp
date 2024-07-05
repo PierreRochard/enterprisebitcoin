@@ -18,7 +18,7 @@
 #include <cmath>
 #include <ctime>
 #include <string>
-
+#include <algorithm>
 
 #include <timedata.h>
 
@@ -28,6 +28,31 @@
 #include <enterprise/dotenv.h>
 #include <pqxx/pqxx>
 
+std::map<int, double> calculatePercentiles(std::vector<double>& data) {
+    std::map<int, double> percentiles;
+
+    // Sort the data
+    std::sort(data.begin(), data.end());
+
+    // Calculate percentiles from 1 to 99
+    for (int p = 1; p <= 99; ++p) {
+        // Determine rank
+        double rank = (p / 100.0) * (data.size() - 1);
+        int lowIndex = std::floor(rank);
+        int highIndex = std::ceil(rank);
+
+        // Interpolate if necessary
+        if (lowIndex == highIndex) {
+            percentiles[p] = data[lowIndex];
+        } else {
+            double fraction = rank - lowIndex;
+            percentiles[p] = data[lowIndex] + fraction * (data[highIndex] - data[lowIndex]);
+            percentiles[p] = std::round(percentiles[p] * 100) / 100;
+        }
+    }
+
+    return percentiles;
+}
 
 UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, unsigned int flags,
                            CCoinsViewCursor *cursor) {
@@ -53,6 +78,7 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
     std::map<std::array<int64_t, 2>, std::tuple<CAmount, unsigned int, int64_t>> utxo_balance_usd_map;
     std::map<std::string, std::tuple<CAmount, unsigned int, int64_t>> utxo_script_type_map;
 
+    std::vector<double> utxo_balance_usd;
 
     auto &dotenv = env;
     dotenv.config();
@@ -80,6 +106,7 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
     LogPrintf("UtxoSetToSql: USD Price: %f\n", usd_price);
 
     pqxx::work w(c);
+    LogPrintf("Starting UTXO Set to SQL for block %d\n", block_height);
     while (cursor->Valid()) {
         Coin coin;
         cursor->GetValue(coin);
@@ -120,6 +147,8 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         double usd_value = static_cast<double>(coin_value) / 100000000.0 * usd_price;
         total_usd_value += usd_value;
 
+        utxo_balance_usd.push_back(usd_value);
+
         int64_t lowerBoundUsd = std::pow(10, static_cast<int64_t>(std::log10(usd_value)));
         int64_t upperBoundUsd = lowerBoundUsd * 10;
         auto &balance_usd_tuple = utxo_balance_usd_map[{lowerBoundUsd, upperBoundUsd}];
@@ -134,6 +163,7 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
 
         cursor->Next();
     }
+    LogPrintf("Completed UTXO Set to SQL for block %d\n", block_height);
 
     pqxx::stream_to stream{pqxx::stream_to::table(
             w,
@@ -194,6 +224,22 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         stream2b.write_values(block_height, median_time, lower_bound, upper_bound, utxo_count, utxo_value, utxo_size, count_percentage, value_percentage, size_percentage);
     }
     stream2b.complete();
+
+    std::map<int, double> percentiles = calculatePercentiles(utxo_balance_usd);
+    LogPrintf("UtxoSetToSql: Percentiles calculated\n");
+
+    pqxx::stream_to stream3{pqxx::stream_to::table(
+            w,
+            {"utxo_balances_usd_percentiles"},
+            {"block_height", "median_time", "percentile", "utxo_value"})};
+
+    for (const auto &entry : percentiles) {
+        int percentile = entry.first;
+        double utxo_value = entry.second;
+
+        stream3.write_values(block_height, median_time, percentile, utxo_value);
+    }
+    stream3.complete();
 
     pqxx::stream_to stream4{pqxx::stream_to::table(
             w,

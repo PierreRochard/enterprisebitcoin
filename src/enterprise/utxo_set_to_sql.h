@@ -1,5 +1,11 @@
 #ifndef UTXO_SET_TO_SQL_H
 #define UTXO_SET_TO_SQL_H
+#include <vector>
+#include <map>
+#include <algorithm>
+#include <cmath>
+
+std::map<int, double> calculatePercentiles(std::vector<double>& data);
 
 class UtxoSetToSql {
 public:
