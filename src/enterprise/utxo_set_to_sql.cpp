@@ -78,6 +78,7 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
     std::map<std::array<int64_t, 2>, std::tuple<CAmount, unsigned int, int64_t>> utxo_balance_usd_map;
     std::map<std::string, std::tuple<CAmount, unsigned int, int64_t>> utxo_script_type_map;
 
+    std::vector<double> utxo_balance;
     std::vector<double> utxo_balance_usd;
 
     auto &dotenv = env;
@@ -147,6 +148,7 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         double usd_value = static_cast<double>(coin_value) / 100000000.0 * usd_price;
         total_usd_value += usd_value;
 
+        utxo_balance.push_back(static_cast<double>(coin_value));
         utxo_balance_usd.push_back(usd_value);
 
         int64_t lowerBoundUsd = std::pow(10, static_cast<int64_t>(std::log10(usd_value)));
@@ -225,15 +227,28 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
     }
     stream2b.complete();
 
-    std::map<int, double> percentiles = calculatePercentiles(utxo_balance_usd);
+    std::map<int, double> percentiles = calculatePercentiles(utxo_balance);
+    std::map<int, double> usd_percentiles = calculatePercentiles(utxo_balance_usd);
     LogPrintf("UtxoSetToSql: Percentiles calculated\n");
+
+    pqxx::stream_to stream3a{pqxx::stream_to::table(
+            w,
+            {"utxo_balances_percentiles"},
+            {"block_height", "median_time", "percentile", "utxo_value"})};
+    for (const auto &entry : percentiles) {
+        int percentile = entry.first;
+        double utxo_value = entry.second;
+
+        stream3a.write_values(block_height, median_time, percentile, utxo_value);
+    }
+    stream3a.complete();
 
     pqxx::stream_to stream3{pqxx::stream_to::table(
             w,
             {"utxo_balances_usd_percentiles"},
             {"block_height", "median_time", "percentile", "utxo_value"})};
 
-    for (const auto &entry : percentiles) {
+    for (const auto &entry : usd_percentiles) {
         int percentile = entry.first;
         double utxo_value = entry.second;
 

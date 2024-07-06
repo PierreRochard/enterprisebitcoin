@@ -43,6 +43,15 @@ CREATE TABLE utxo_balances_usd (
 );
 CREATE UNIQUE INDEX utxo_balances_usd_block_height_balance_min_balance_max_idx ON utxo_balances_usd (block_height, lower_bound, upper_bound);
 
+CREATE TABLE utxo_balances_percentiles (
+    id SERIAL PRIMARY KEY,
+    block_height BIGINT,
+    median_time TIMESTAMP,
+    percentile BIGINT,
+    utxo_value FLOAT
+);
+CREATE UNIQUE INDEX utxo_balances_percentiles_block_height_percentile_idx ON utxo_balances_percentiles (block_height, percentile);
+
 CREATE TABLE utxo_balances_usd_percentiles (
     id SERIAL PRIMARY KEY,
     block_height BIGINT,
