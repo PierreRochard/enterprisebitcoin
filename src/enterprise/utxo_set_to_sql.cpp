@@ -102,7 +102,9 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
     pqxx::result r = w1.exec("SELECT price FROM prices WHERE day = '" + median_time + "';");
     LogPrintf("UtxoSetToSql: USD Price Query: %s\n", "SELECT price FROM prices WHERE day = '" + median_time + "';");
     w1.commit();
-
+    if (r.empty()) {
+        throw std::runtime_error("No price data for the given day");
+    }
     double usd_price = r[0][0].as<double>();
     LogPrintf("UtxoSetToSql: USD Price: %f\n", usd_price);
 
