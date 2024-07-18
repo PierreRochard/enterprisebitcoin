@@ -43,7 +43,7 @@ inline unsigned int GetTxnOutputTypeEnum(TxoutType t) {
     assert(false);
 }
 
-unsigned int GetMemPoolRemovalReasonEnum(MemPoolRemovalReason r) {
+inline unsigned int GetMemPoolRemovalReasonEnum(MemPoolRemovalReason r) {
     switch (r) {
         case MemPoolRemovalReason::EXPIRY:
             return 1;
