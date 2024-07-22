@@ -2502,15 +2502,17 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state, 
             fScriptChecks && parallel_script_checks ? &m_chainman.GetCheckQueue() : nullptr);
     std::vector <PrecomputedTransactionData> txsdata(block.vtx.size());
 
-    // flush the CoinsDB cache to disk
-    this->CoinsTip().Flush();
-    std::unique_ptr <CCoinsViewCursor> pcursor;
-    pcursor = CHECK_NONFATAL(this->CoinsDB().Cursor());
-    BlockToSql block_to_sql(pindex, block, view, flags, pcursor.get());
-    if (pindex->nHeight % 4032 == 0) {
-        UtxoSetToSql utxo_set_to_sql(pindex, block, view, flags, pcursor.get());
-    };
-
+// If past height 500000
+    if (pindex->nHeight > 535657) {
+        // flush the CoinsDB cache to disk
+        this->CoinsTip().Flush();
+        std::unique_ptr <CCoinsViewCursor> pcursor;
+        pcursor = CHECK_NONFATAL(this->CoinsDB().Cursor());
+        BlockToSql block_to_sql(pindex, block, view, flags, pcursor.get());
+        if (pindex->nHeight % 4032 == 0) {
+            UtxoSetToSql utxo_set_to_sql(pindex, block, view, flags, pcursor.get());
+        };
+    }
     std::vector<int> prevheights;
     CAmount nFees = 0;
     int nInputs = 0;
