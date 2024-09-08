@@ -2503,7 +2503,7 @@ bool Chainstate::ConnectBlock(const CBlock &block, BlockValidationState &state, 
     std::vector <PrecomputedTransactionData> txsdata(block.vtx.size());
 
 // If past height 500000
-    if (pindex->nHeight > 858600) {
+    if (pindex->nHeight > 858816) {
         // flush the CoinsDB cache to disk
         this->CoinsTip().Flush();
         std::unique_ptr <CCoinsViewCursor> pcursor;
