@@ -68,7 +68,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
     std::map<CAmount, unsigned int> fee_rates;
 
     std::map<unsigned int, std::array<uint64_t, 4>> output_script_types;
-    std::map<unsigned int, std::array<uint64_t, 6>> input_script_types;
+    std::map<unsigned int, std::array<uint64_t, 7>> input_script_types;
 
     unsigned int nonstandard_create_count = 0;
     unsigned int pubkey_create_count = 0;
@@ -346,6 +346,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
 
             uint64_t input_size = GetSerializeSize(txin_data) +
                                   GetSerializeSize(txin_data.scriptWitness.stack);
+            uint64_t input_witness_size = GetSerializeSize(txin_data.scriptWitness.stack);
             uint64_t input_weight = GetTransactionInputWeight(txin_data);
 
             bool input_found_ord_prefix = false;
@@ -373,6 +374,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             input_script_types[spent_script_type][5] += this_input_legacy_signature_operations;
             input_script_types[spent_script_type][5] += this_input_p2sh_signature_operations;
             input_script_types[spent_script_type][5] += this_input_witness_signature_operations;
+            input_script_types[spent_script_type][6] += input_witness_size;
 
             input_data_string_stream << "[";
             input_data_string_stream << input_weight << ",";
