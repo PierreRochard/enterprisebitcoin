@@ -49,6 +49,12 @@
       "dependencies": [
         "zeromq"
       ]
+    },
+    "enterprise": {
+      "description": "Enable PostgreSQL exporters in src/enterprise",
+      "dependencies": [
+        "libpqxx"
+      ]
     }
   },
   "overrides": [

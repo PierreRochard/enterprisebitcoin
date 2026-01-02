@@ -7,6 +7,8 @@
 /*build*
 !/build-aux
 !/build_msvc
+/out
+.env
 
 *.pyc
 

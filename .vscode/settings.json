@@ -1,0 +1,21 @@
+{
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": false,
+  "cmake.buildArgs": [
+    "--parallel"
+  ],
+  "cmake.ctestArgs": [
+    "--output-on-failure"
+  ],
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "C_Cpp.codeAnalysis.clangTidy.enabled": true,
+  "C_Cpp.codeAnalysis.clangTidy.configFile": "${workspaceFolder}/src/.clang-tidy",
+  "C_Cpp.codeAnalysis.clangTidy.path": "clang-tidy",
+  "C_Cpp.clang_format_style": "file",
+  "C_Cpp.clang_format_fallbackStyle": "none",
+  "C_Cpp.vcpkg.enabled": true,
+  "[cpp]": {
+    "editor.defaultFormatter": "ms-vscode.cpptools",
+    "editor.formatOnSaveMode": "modificationsIfAvailable"
+  }
+}

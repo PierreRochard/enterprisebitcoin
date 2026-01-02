@@ -1,0 +1,36 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "CMake: build (active preset)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build",
+        "${command:cmake.buildDirectory}",
+        "--config",
+        "${command:cmake.buildType}",
+        "--parallel"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "CMake: test (ctest active preset)",
+      "type": "shell",
+      "command": "ctest",
+      "args": [
+        "--test-dir",
+        "${command:cmake.buildDirectory}",
+        "--output-on-failure",
+        "-C",
+        "${command:cmake.buildType}"
+      ],
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}

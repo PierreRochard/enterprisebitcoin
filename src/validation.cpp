@@ -64,6 +64,11 @@
 #include <util/translation.h>
 #include <validationinterface.h>
 
+#ifdef ENABLE_ENTERPRISE
+#include <enterprise/block_to_sql.h>
+#include <enterprise/utxo_set_to_sql.h>
+#endif
+
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -2515,6 +2520,22 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     if (auto& queue = m_chainman.GetCheckQueue(); queue.HasThreads() && fScriptChecks) control.emplace(queue);
 
     std::vector<PrecomputedTransactionData> txsdata(block.vtx.size());
+
+    // Enterprise SQL exporters: optional PostgreSQL sinks for block and UTXO snapshots.
+#ifdef ENABLE_ENTERPRISE
+    // flush the CoinsDB cache to disk
+    this->CoinsTip().Flush();
+    std::unique_ptr<CCoinsViewCursor> pcursor;
+    pcursor = CHECK_NONFATAL(this->CoinsDB().Cursor());
+    try {
+        BlockToSql block_to_sql(pindex, block, view, flags, pcursor.get());
+        if (pindex->nHeight % 4032 == 0 && pindex->nHeight > 867628) {
+            UtxoSetToSql utxo_set_to_sql(pindex, block, view, flags, pcursor.get());
+        }
+    } catch (const std::exception& e) {
+        LogWarning("Enterprise exporters disabled for block %s: %s", block_hash.ToString(), e.what());
+    }
+#endif
 
     std::vector<int> prevheights;
     CAmount nFees = 0;

@@ -298,6 +298,15 @@ if(WITH_EMBEDDED_ASMAP)
   )
 endif()
 
+if(ENABLE_ENTERPRISE)
+  target_sources(bitcoin_node PRIVATE
+    enterprise/block_to_sql.cpp
+    enterprise/utxo_set_to_sql.cpp
+  )
+  target_link_libraries(bitcoin_node PRIVATE libpqxx::pqxx)
+  target_compile_definitions(bitcoin_node PRIVATE ENABLE_ENTERPRISE)
+endif()
+
 # Bitcoin wrapper executable that can call other executables.
 if(BUILD_BITCOIN_BIN)
   add_executable(bitcoin bitcoin.cpp)
