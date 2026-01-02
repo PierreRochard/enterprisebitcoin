@@ -19,10 +19,14 @@
 #include <ctime>
 #include <string>
 #include <algorithm>
+#include <string_view>
+#include <tuple>
+#include <utility>
 
 #include <enterprise/utxo_set_to_sql.h>
 #include <enterprise/utilities.h>
 
+#include <enterprise/db.h>
 #include <enterprise/dotenv.h>
 #include <pqxx/pqxx>
 
@@ -51,6 +55,143 @@ std::map<int, double> calculatePercentiles(std::vector<double>& data) {
 
     return percentiles;
 }
+
+namespace {
+
+struct UtxoAgeRow {
+    unsigned int weeks_old;
+    CAmount utxo_value;
+    unsigned int utxo_count;
+    int64_t utxo_size;
+    double count_percentage;
+    double value_percentage;
+    double size_percentage;
+};
+
+struct UtxoBalanceRow {
+    int64_t lower_bound;
+    int64_t upper_bound;
+    CAmount utxo_value;
+    unsigned int utxo_count;
+    int64_t utxo_size;
+    double count_percentage;
+    double value_percentage;
+    double size_percentage;
+};
+
+struct UtxoBalanceUsdRow {
+    int64_t lower_bound;
+    int64_t upper_bound;
+    double utxo_value;
+    unsigned int utxo_count;
+    int64_t utxo_size;
+    double count_percentage;
+    double value_percentage;
+    double size_percentage;
+};
+
+struct UtxoPercentileRow {
+    int percentile;
+    double utxo_value;
+};
+
+struct UtxoScriptTypeRow {
+    std::string script_type;
+    CAmount utxo_value;
+    unsigned int utxo_count;
+    int64_t utxo_size;
+    double count_percentage;
+    double value_percentage;
+    double size_percentage;
+};
+
+struct UtxoSetExportData {
+    int block_height;
+    std::string median_time;
+    std::vector<UtxoAgeRow> utxo_age_rows;
+    std::vector<UtxoBalanceRow> utxo_balance_rows;
+    std::vector<UtxoBalanceUsdRow> utxo_balance_usd_rows;
+    std::vector<UtxoPercentileRow> utxo_percentiles;
+    std::vector<UtxoPercentileRow> utxo_usd_percentiles;
+    std::vector<UtxoScriptTypeRow> script_type_rows;
+};
+
+void EnqueueUtxoInsert(UtxoSetExportData&& data)
+{
+    enterprise::DbWorkQueue::Instance().Enqueue([data = std::move(data)](pqxx::connection& conn) mutable {
+        pqxx::work w(conn);
+
+        auto stream_age = pqxx::stream_to::table(
+                w,
+                pqxx::table_path{"utxo_age"},
+                {std::string_view{"block_height"}, std::string_view{"median_time"}, std::string_view{"weeks_old"}, std::string_view{"utxo_count"}, std::string_view{"utxo_value"},
+                 std::string_view{"utxo_size"}, std::string_view{"utxo_count_percent"}, std::string_view{"utxo_value_percent"}, std::string_view{"utxo_size_percent"}});
+        for (const auto& row : data.utxo_age_rows) {
+            stream_age.write_values(data.block_height, data.median_time, row.weeks_old, row.utxo_count,
+                                    row.utxo_value, row.utxo_size, row.count_percentage, row.value_percentage,
+                                    row.size_percentage);
+        }
+        stream_age.complete();
+
+        auto stream_bal = pqxx::stream_to::table(
+                w,
+                pqxx::table_path{"utxo_balances"},
+                {std::string_view{"block_height"}, std::string_view{"median_time"}, std::string_view{"lower_bound"}, std::string_view{"upper_bound"}, std::string_view{"utxo_count"}, std::string_view{"utxo_value"},
+                 std::string_view{"utxo_size"}, std::string_view{"utxo_count_percent"}, std::string_view{"utxo_value_percent"}, std::string_view{"utxo_size_percent"}});
+        for (const auto& row : data.utxo_balance_rows) {
+            stream_bal.write_values(data.block_height, data.median_time, row.lower_bound, row.upper_bound,
+                                    row.utxo_count, row.utxo_value, row.utxo_size, row.count_percentage,
+                                    row.value_percentage, row.size_percentage);
+        }
+        stream_bal.complete();
+
+        auto stream_bal_usd = pqxx::stream_to::table(
+                w,
+                pqxx::table_path{"utxo_balances_usd"},
+                {std::string_view{"block_height"}, std::string_view{"median_time"}, std::string_view{"lower_bound"}, std::string_view{"upper_bound"}, std::string_view{"utxo_count"}, std::string_view{"utxo_value"},
+                 std::string_view{"utxo_size"}, std::string_view{"utxo_count_percent"}, std::string_view{"utxo_value_percent"}, std::string_view{"utxo_size_percent"}});
+        for (const auto& row : data.utxo_balance_usd_rows) {
+            stream_bal_usd.write_values(data.block_height, data.median_time, row.lower_bound, row.upper_bound,
+                                        row.utxo_count, row.utxo_value, row.utxo_size, row.count_percentage,
+                                        row.value_percentage, row.size_percentage);
+        }
+        stream_bal_usd.complete();
+
+        auto stream_percentiles = pqxx::stream_to::table(
+                w,
+                pqxx::table_path{"utxo_balances_percentiles"},
+                {std::string_view{"block_height"}, std::string_view{"median_time"}, std::string_view{"percentile"}, std::string_view{"utxo_value"}});
+        for (const auto& row : data.utxo_percentiles) {
+            stream_percentiles.write_values(data.block_height, data.median_time, row.percentile, row.utxo_value);
+        }
+        stream_percentiles.complete();
+
+        auto stream_usd_percentiles = pqxx::stream_to::table(
+                w,
+                pqxx::table_path{"utxo_balances_usd_percentiles"},
+                {std::string_view{"block_height"}, std::string_view{"median_time"}, std::string_view{"percentile"}, std::string_view{"utxo_value"}});
+        for (const auto& row : data.utxo_usd_percentiles) {
+            stream_usd_percentiles.write_values(data.block_height, data.median_time, row.percentile, row.utxo_value);
+        }
+        stream_usd_percentiles.complete();
+
+        auto stream_script = pqxx::stream_to::table(
+                w,
+                pqxx::table_path{"utxo_script_types"},
+                {std::string_view{"block_height"}, std::string_view{"median_time"}, std::string_view{"script_type"}, std::string_view{"utxo_count"}, std::string_view{"utxo_value"},
+                 std::string_view{"utxo_size"}, std::string_view{"utxo_count_percent"}, std::string_view{"utxo_value_percent"}, std::string_view{"utxo_size_percent"}});
+        for (const auto& row : data.script_type_rows) {
+            stream_script.write_values(data.block_height, data.median_time, row.script_type, row.utxo_count,
+                                       row.utxo_value, row.utxo_size, row.count_percentage, row.value_percentage,
+                                       row.size_percentage);
+        }
+        stream_script.complete();
+
+        w.commit();
+    });
+}
+
+} // namespace
 
 UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, script_verify_flags flags,
                            CCoinsViewCursor *cursor) {
@@ -81,23 +222,8 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
     std::vector<double> utxo_balance;
     std::vector<double> utxo_balance_usd;
 
-    auto &dotenv = env;
-    dotenv.config();
-
-    std::stringstream connStream;
-    connStream << "dbname = "
-               << dotenv["PGDB"]
-               << " user = "
-               << dotenv["PGUSER"]
-               << " password = "
-               << dotenv["PGPASSWORD"]
-               << " hostaddr = "
-               << dotenv["PGHOST"]
-               << " port = "
-               << dotenv["PGPORT"];
-    pqxx::connection c(connStream.str());
-
-    pqxx::work w1(c);
+    auto& conn = enterprise::PgConnection();
+    pqxx::work w1(conn);
 
     const std::string price_query = "SELECT price FROM prices WHERE day = '" + median_time + "';";
     pqxx::result r = w1.exec(price_query);
@@ -109,7 +235,6 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
     double usd_price = r[0][0].as<double>();
     LogInfo("UtxoSetToSql: USD Price: %f", usd_price);
 
-    pqxx::work w(c);
     LogInfo("Starting UTXO Set to SQL for block %d", block_height);
     while (cursor->Valid()) {
         Coin coin;
@@ -170,11 +295,10 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
     }
     LogInfo("Completed UTXO Set to SQL for block %d", block_height);
 
-    pqxx::stream_to stream{pqxx::stream_to::table(
-            w,
-            {"utxo_age"},
-            {"block_height", "median_time", "weeks_old", "utxo_count", "utxo_value",
-                                     "utxo_size", "utxo_count_percent", "utxo_value_percent", "utxo_size_percent"})};
+    UtxoSetExportData export_data;
+    export_data.block_height = block_height;
+    export_data.median_time = median_time;
+
     for (const auto &entry : utxo_age_map) {
         unsigned int weeks_old = entry.first;
         CAmount utxo_value = std::get<0>(entry.second);
@@ -185,15 +309,9 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         double count_percentage = std::round(static_cast<double>(utxo_count) / total_count * 10000.0) / 100.0;
         double size_percentage = std::round(static_cast<double>(utxo_size) / total_size * 10000.0) / 100.0;
 
-        stream.write_values(block_height, median_time, weeks_old, utxo_count, utxo_value, utxo_size, count_percentage, value_percentage, size_percentage);
+        export_data.utxo_age_rows.push_back({weeks_old, utxo_value, utxo_count, utxo_size, count_percentage, value_percentage, size_percentage});
     };
-    stream.complete();
 
-    pqxx::stream_to stream2{pqxx::stream_to::table(
-            w,
-            {"utxo_balances"},
-            {"block_height", "median_time", "lower_bound", "upper_bound", "utxo_count", "utxo_value",
-                                     "utxo_size", "utxo_count_percent", "utxo_value_percent", "utxo_size_percent"})};
     for (const auto &entry : utxo_balance_map) {
         CAmount lower_bound = std::get<0>(entry.first);
         CAmount upper_bound = std::get<1>(entry.first);
@@ -205,15 +323,8 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         double count_percentage = std::round(static_cast<double>(utxo_count) / total_count * 10000.0) / 100.0;
         double size_percentage = std::round(static_cast<double>(utxo_size) / total_size * 10000.0) / 100.0;
 
-        stream2.write_values(block_height, median_time, lower_bound, upper_bound, utxo_count, utxo_value, utxo_size, count_percentage, value_percentage, size_percentage);
+        export_data.utxo_balance_rows.push_back({static_cast<int64_t>(lower_bound), static_cast<int64_t>(upper_bound), utxo_value, utxo_count, utxo_size, count_percentage, value_percentage, size_percentage});
     }
-    stream2.complete();
-
-    pqxx::stream_to stream2b{pqxx::stream_to::table(
-            w,
-            {"utxo_balances_usd"},
-            {"block_height", "median_time", "lower_bound", "upper_bound", "utxo_count", "utxo_value",
-                                     "utxo_size", "utxo_count_percent", "utxo_value_percent", "utxo_size_percent"})};
 
     for (const auto &entry : utxo_balance_usd_map) {
         int64_t lower_bound = std::get<0>(entry.first);
@@ -226,44 +337,25 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         double count_percentage = std::round(static_cast<double>(utxo_count) / total_count * 10000.0) / 100.0;
         double size_percentage = std::round(static_cast<double>(utxo_size) / total_size * 10000.0) / 100.0;
 
-        stream2b.write_values(block_height, median_time, lower_bound, upper_bound, utxo_count, utxo_value, utxo_size, count_percentage, value_percentage, size_percentage);
+        export_data.utxo_balance_usd_rows.push_back({lower_bound, upper_bound, utxo_value, utxo_count, utxo_size, count_percentage, value_percentage, size_percentage});
     }
-    stream2b.complete();
 
     std::map<int, double> percentiles = calculatePercentiles(utxo_balance);
     std::map<int, double> usd_percentiles = calculatePercentiles(utxo_balance_usd);
     LogInfo("UtxoSetToSql: Percentiles calculated");
 
-    pqxx::stream_to stream3a{pqxx::stream_to::table(
-            w,
-            {"utxo_balances_percentiles"},
-            {"block_height", "median_time", "percentile", "utxo_value"})};
     for (const auto &entry : percentiles) {
         int percentile = entry.first;
         double utxo_value = entry.second;
-
-        stream3a.write_values(block_height, median_time, percentile, utxo_value);
+        export_data.utxo_percentiles.push_back({percentile, utxo_value});
     }
-    stream3a.complete();
-
-    pqxx::stream_to stream3{pqxx::stream_to::table(
-            w,
-            {"utxo_balances_usd_percentiles"},
-            {"block_height", "median_time", "percentile", "utxo_value"})};
 
     for (const auto &entry : usd_percentiles) {
         int percentile = entry.first;
         double utxo_value = entry.second;
-
-        stream3.write_values(block_height, median_time, percentile, utxo_value);
+        export_data.utxo_usd_percentiles.push_back({percentile, utxo_value});
     }
-    stream3.complete();
 
-    pqxx::stream_to stream4{pqxx::stream_to::table(
-            w,
-            {"utxo_script_types"},
-            {"block_height", "median_time", "script_type", "utxo_count", "utxo_value",
-                                     "utxo_size", "utxo_count_percent", "utxo_value_percent", "utxo_size_percent"})};
     for (const auto &entry : utxo_script_type_map) {
         std::string script_type = entry.first;
         CAmount utxo_value = std::get<0>(entry.second);
@@ -274,12 +366,11 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         double count_percentage = std::round(static_cast<double>(utxo_count) / total_count * 10000.0) / 100.0;
         double size_percentage = std::round(static_cast<double>(utxo_size) / total_size * 10000.0) / 100.0;
 
-        stream4.write_values(block_height, median_time, script_type, utxo_count, utxo_value, utxo_size, count_percentage, value_percentage, size_percentage);
+        export_data.script_type_rows.push_back({script_type, utxo_value, utxo_count, utxo_size, count_percentage, value_percentage, size_percentage});
     };
-    stream4.complete();
 
-    w.commit();
+    EnqueueUtxoInsert(std::move(export_data));
 
-    LogInfo("UtxoSetToSql: Block %d, %d UTXOs, %d bytes", block_height, total_count, total_size);
+    LogInfo("UtxoSetToSql: Block %d queued, %d UTXOs, %d bytes", block_height, total_count, total_size);
 
 }

@@ -18,15 +18,18 @@
 #include <rpc/blockchain.h>
 #include <cmath> // Include for std::round
 #include <array>
+#include <algorithm>
 #include <iterator>
 #include <map>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 
 #include <enterprise/block_to_sql.h>
 #include <enterprise/utilities.h>
 
+#include <enterprise/db.h>
 #include <enterprise/dotenv.h>
 #include <pqxx/pqxx>
 
@@ -45,28 +48,357 @@ std::string ChainToString() {
     return "unknown";
 }
 
+namespace {
+
+struct BlockInsertData {
+    std::string hash;
+    std::string merkle_root;
+    int64_t time;
+    int64_t median_time;
+    int64_t height;
+    int64_t subsidy;
+
+    int64_t transactions_count;
+    int64_t version;
+    int64_t status;
+
+    int64_t bits;
+    int64_t nonce;
+    double difficulty;
+
+    std::string chain_work;
+    int64_t outputs_count;
+    int64_t inputs_count;
+
+    int64_t total_output_value;
+    int64_t total_input_value;
+    int64_t total_fees;
+
+    int64_t total_size;
+    int64_t total_vsize;
+    int64_t total_weight;
+
+    std::string fee_rates;
+    std::string output_data;
+    std::string input_data;
+
+    std::string transaction_data;
+    std::string output_script_types;
+    std::string input_script_types;
+
+    int64_t output_legacy_signature_operations;
+    int64_t input_legacy_signature_operations;
+    int64_t input_p2sh_signature_operations;
+    int64_t input_witness_signature_operations;
+
+    int64_t outputs_total_size;
+    int64_t inputs_total_size;
+    int64_t net_utxo_size_impact;
+
+    std::string hash_prev_block;
+    std::string network;
+
+    int64_t nonstandard_create_count;
+    int64_t pubkey_create_count;
+    int64_t pubkeyhash_create_count;
+    int64_t scripthash_create_count;
+    int64_t multisig_create_count;
+    int64_t null_data_create_count;
+    int64_t witness_v0_keyhash_create_count;
+    int64_t witness_v0_scripthash_create_count;
+    int64_t witness_v1_taproot_create_count;
+    int64_t witness_unknown_create_count;
+
+    int64_t nonstandard_spend_count;
+    int64_t pubkey_spend_count;
+    int64_t pubkeyhash_spend_count;
+    int64_t scripthash_spend_count;
+    int64_t multisig_spend_count;
+    int64_t null_data_spend_count;
+    int64_t witness_v0_keyhash_spend_count;
+    int64_t witness_v0_scripthash_spend_count;
+    int64_t witness_v1_taproot_spend_count;
+    int64_t witness_unknown_spend_count;
+    int64_t coinbase;
+
+    int64_t ordinals_weight;
+    int64_t ordinals_count;
+    int64_t ordinals_size;
+    int64_t ordinals_vsize;
+    int64_t ordinals_fees;
+
+    int64_t non_ordinals_weight;
+    int64_t non_ordinals_count;
+    int64_t non_ordinals_size;
+    int64_t non_ordinals_vsize;
+    int64_t non_ordinals_fees;
+};
+
+inline void PrepareBlockStatements(pqxx::connection& c)
+{
+    thread_local bool prepared = false;
+    if (prepared) return;
+    c.prepare("DeleteBlock", "DELETE FROM blocks WHERE hash = $1;");
+    c.prepare("InsertBlock", "INSERT INTO blocks "
+                             "("
+                             "hash, "
+                             "merkle_root, "
+                             "time, "
+
+                             "median_time, "
+                             "height, "
+                             "subsidy, "
+
+                             "transactions_count, "
+                             "version, "
+                             "status, "
+
+                             "bits, "
+                             "nonce, "
+                             "difficulty, "
+
+                             "chain_work, "
+                             "outputs_count, "
+                             "inputs_count, "
+
+                             "total_output_value, "
+                             "total_input_value, "
+                             "total_fees, "
+
+                             "total_size, "
+                             "total_vsize, "
+                             "total_weight, "
+
+                             "fee_rates, "
+                             "output_data, "
+                             "input_data, "
+
+                             "transaction_data, "
+                             "output_script_types, "
+                             "input_script_types, "
+
+                             "output_legacy_signature_operations, "
+                             "input_legacy_signature_operations, "
+                             "input_p2sh_signature_operations, "
+                             "input_witness_signature_operations, "
+
+                             "outputs_total_size, "
+                             "inputs_total_size, "
+                             "net_utxo_size_impact, "
+
+                             "hash_prev_block, "
+                             "network, "
+
+                             "nonstandard_create_count           , "
+                             "pubkey_create_count                , "
+                             "pubkeyhash_create_count            , "
+                             "scripthash_create_count            , "
+                             "multisig_create_count              , "
+                             "null_data_create_count             , "
+                             "witness_v0_keyhash_create_count    , "
+                             "witness_v0_scripthash_create_count , "
+                             "witness_v1_taproot_create_count    , "
+                             "witness_unknown_create_count       , "
+
+                             "nonstandard_spend_count            , "
+                             "pubkey_spend_count                 , "
+                             "pubkeyhash_spend_count             , "
+                             "scripthash_spend_count             , "
+                             "multisig_spend_count               , "
+                             "null_data_spend_count              , "
+                             "witness_v0_keyhash_spend_count     , "
+                             "witness_v0_scripthash_spend_count  , "
+                             "witness_v1_taproot_spend_count     , "
+                             "witness_unknown_spend_count        , "
+                             "coinbase , "
+
+                             "ordinals_weight , "
+                             "ordinals_count , "
+                             "ordinals_size , "
+                             "ordinals_vsize , "
+                             "ordinals_fees, "
+
+                             "non_ordinals_weight , "
+                             "non_ordinals_count , "
+                             "non_ordinals_size , "
+                             "non_ordinals_vsize , "
+                             "non_ordinals_fees"
+
+                             ") "
+
+                             "VALUES "
+                             "("
+                             "$1, " // hash
+                             "$2, " // merkle_root
+                             "to_timestamp($3), " // time
+
+                             "to_timestamp($4), " // median_time
+                             "$5, " // height
+                             "$6, " // subsidy
+
+                             "$7, " // transactions_count
+                             "$8, " // version
+                             "$9, " // status
+
+                             "$10, " // bits
+                             "$11, " // nonce
+                             "$12, " // difficulty
+
+                             "$13, " // chain_work
+                             "$14, " // outputs_count
+                             "$15, " // inputs_count
+
+                             "$16, " // total_output_value
+                             "$17, " // total_input_value
+                             "$18, " // total_fees
+
+                             "$19, " // total_size
+                             "$20, " // total_vsize
+                             "$21, " // total_weight
+
+                             "$22, " // fee_rates
+                             "$23, " // output_data
+                             "$24, " // input_data
+
+                             "$25, " // transaction_data
+                             "$26, " // output_script_types
+                             "$27, " // input_script_types
+
+                             "$28, " // output_legacy_signature_operations
+                             "$29, " // input_legacy_signature_operations
+                             "$30, " // input_p2sh_signature_operations
+                             "$31, " // input_witness_signature_operations
+
+                             "$32, " // outputs_total_size
+                             "$33, " // inputs_total_size
+                             "$34, " // net_utxo_size_impact
+
+                             "$35, " // hash_prev_block
+                             "$36, "   // network
+
+                             "$37, " // nonstandard_create_count
+                             "$38, " // pubkey_create_count
+                             "$39, " // pubkeyhash_create_count
+                             "$40, " // scripthash_create_count
+                             "$41, " // multisig_create_count
+                             "$42, " // null_data_create_count
+                             "$43, " // witness_v0_keyhash_create_count
+                             "$44, " // witness_v0_scripthash_create_count
+                             "$45, " // witness_v1_taproot_create_count
+                             "$46, " // witness_unknown_create_count
+
+                             "$47, " // nonstandard_spend_count
+                             "$48, " // pubkey_spend_count
+                             "$49, " // pubkeyhash_spend_count
+                             "$50, " // scripthash_spend_count
+                             "$51, " // multisig_spend_count
+                             "$52, " // null_data_spend_count
+                             "$53, " // witness_v0_keyhash_spend_count
+                             "$54, " // witness_v0_scripthash_spend_count
+                             "$55, " // witness_v1_taproot_spend_count
+                             "$56, " // witness_unknown_spend_count
+                             "$57, "  // coinbase
+
+                             "$58, "  // ordinals_weight
+                             "$59, "  // ordinals_count
+                             "$60, "  // ordinals_size
+                             "$61, "  // ordinals_vsize
+                             "$62, "  // ordinals_fees
+
+                             "$63, "  // non_ordinals_weight
+                             "$64, "  // non_ordinals_count
+                             "$65, "  // non_ordinals_size
+                             "$66, "  // non_ordinals_vsize
+                             "$67 "  // non_ordinals_fees
+
+                             ") ON CONFLICT DO NOTHING ;");
+    prepared = true;
+}
+
+inline void EnqueueBlockInsert(BlockInsertData&& data)
+{
+    enterprise::DbWorkQueue::Instance().Enqueue([data = std::move(data)](pqxx::connection& conn) mutable {
+        PrepareBlockStatements(conn);
+        pqxx::work w(conn);
+        w.exec(pqxx::prepped{"DeleteBlock"}, pqxx::params{data.hash});
+        w.exec(pqxx::prepped{"InsertBlock"}, pqxx::params{
+                data.hash,
+                data.merkle_root,
+                data.time,
+                data.median_time,
+                data.height,
+                data.subsidy,
+                data.transactions_count,
+                data.version,
+                data.status,
+                data.bits,
+                data.nonce,
+                data.difficulty,
+                data.chain_work,
+                data.outputs_count,
+                data.inputs_count,
+                data.total_output_value,
+                data.total_input_value,
+                data.total_fees,
+                data.total_size,
+                data.total_vsize,
+                data.total_weight,
+                data.fee_rates,
+                data.output_data,
+                data.input_data,
+                data.transaction_data,
+                data.output_script_types,
+                data.input_script_types,
+                data.output_legacy_signature_operations,
+                data.input_legacy_signature_operations,
+                data.input_p2sh_signature_operations,
+                data.input_witness_signature_operations,
+                data.outputs_total_size,
+                data.inputs_total_size,
+                data.net_utxo_size_impact,
+                data.hash_prev_block,
+                data.network,
+                data.nonstandard_create_count,
+                data.pubkey_create_count,
+                data.pubkeyhash_create_count,
+                data.scripthash_create_count,
+                data.multisig_create_count,
+                data.null_data_create_count,
+                data.witness_v0_keyhash_create_count,
+                data.witness_v0_scripthash_create_count,
+                data.witness_v1_taproot_create_count,
+                data.witness_unknown_create_count,
+                data.nonstandard_spend_count,
+                data.pubkey_spend_count,
+                data.pubkeyhash_spend_count,
+                data.scripthash_spend_count,
+                data.multisig_spend_count,
+                data.null_data_spend_count,
+                data.witness_v0_keyhash_spend_count,
+                data.witness_v0_scripthash_spend_count,
+                data.witness_v1_taproot_spend_count,
+                data.witness_unknown_spend_count,
+                data.coinbase,
+                data.ordinals_weight,
+                data.ordinals_count,
+                data.ordinals_size,
+                data.ordinals_vsize,
+                data.ordinals_fees,
+                data.non_ordinals_weight,
+                data.non_ordinals_count,
+                data.non_ordinals_size,
+                data.non_ordinals_vsize,
+                data.non_ordinals_fees});
+        w.commit();
+    });
+}
+
+} // namespace
+
 
 BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, script_verify_flags flags,
                        CCoinsViewCursor *cursor) {
     static constexpr size_t PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
-
-    auto &dotenv = env;
-    dotenv.config();
-
-    std::stringstream connStream;
-    connStream << "dbname = "
-               << dotenv["PGDB"]
-               << " user = "
-               << dotenv["PGUSER"]
-               << " password = "
-               << dotenv["PGPASSWORD"]
-               << " hostaddr = "
-               << dotenv["PGHOST"]
-               << " port = "
-               << dotenv["PGPORT"];
-    pqxx::connection c(connStream.str());
-
-    pqxx::work w(c);
 
     std::map<CAmount, unsigned int> fee_rates;
 
@@ -507,270 +839,76 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
     input_script_types_string_stream << "]";
     output_script_types_string_stream << "]";
 
-    c.prepare("DeleteBlock", "DELETE FROM blocks WHERE hash = $1;");
-    w.exec(pqxx::prepped{"DeleteBlock"}, pqxx::params{
-            block.GetBlockHeader().GetHash().GetHex()                   // hash
-    });
-
-    c.prepare("InsertBlock", "INSERT INTO blocks "
-                             "("
-                             "hash, "
-                             "merkle_root, "
-                             "time, "
-
-                             "median_time, "
-                             "height, "
-                             "subsidy, "
-
-                             "transactions_count, "
-                             "version, "
-                             "status, "
-
-                             "bits, "
-                             "nonce, "
-                             "difficulty, "
-
-                             "chain_work, "
-                             "outputs_count, "
-                             "inputs_count, "
-
-                             "total_output_value, "
-                             "total_input_value, "
-                             "total_fees, "
-
-                             "total_size, "
-                             "total_vsize, "
-                             "total_weight, "
-
-                             "fee_rates, "
-                             "output_data, "
-                             "input_data, "
-
-                             "transaction_data, "
-                             "output_script_types, "
-                             "input_script_types, "
-
-                             "output_legacy_signature_operations, "
-                             "input_legacy_signature_operations, "
-                             "input_p2sh_signature_operations, "
-                             "input_witness_signature_operations, "
-
-                             "outputs_total_size, "
-                             "inputs_total_size, "
-                             "net_utxo_size_impact, "
-
-                             "hash_prev_block, "
-                             "network, "
-
-                             "nonstandard_create_count           , "
-                             "pubkey_create_count                , "
-                             "pubkeyhash_create_count            , "
-                             "scripthash_create_count            , "
-                             "multisig_create_count              , "
-                             "null_data_create_count             , "
-                             "witness_v0_keyhash_create_count    , "
-                             "witness_v0_scripthash_create_count , "
-                             "witness_v1_taproot_create_count    , "
-                             "witness_unknown_create_count       , "
-
-                             "nonstandard_spend_count            , "
-                             "pubkey_spend_count                 , "
-                             "pubkeyhash_spend_count             , "
-                             "scripthash_spend_count             , "
-                             "multisig_spend_count               , "
-                             "null_data_spend_count              , "
-                             "witness_v0_keyhash_spend_count     , "
-                             "witness_v0_scripthash_spend_count  , "
-                             "witness_v1_taproot_spend_count     , "
-                             "witness_unknown_spend_count        , "
-                             "coinbase , "
-
-                             "ordinals_weight , "
-                             "ordinals_count , "
-                             "ordinals_size , "
-                             "ordinals_vsize , "
-                             "ordinals_fees, "
-
-                             "non_ordinals_weight , "
-                             "non_ordinals_count , "
-                             "non_ordinals_size , "
-                             "non_ordinals_vsize , "
-                             "non_ordinals_fees"
-
-                             ") "
-
-                             "VALUES "
-                             "("
-                             "$1, " // hash
-                             "$2, " // merkle_root
-                             "to_timestamp($3), " // time
-
-                             "to_timestamp($4), " // median_time
-                             "$5, " // height
-                             "$6, " // subsidy
-
-                             "$7, " // transactions_count
-                             "$8, " // version
-                             "$9, " // status
-
-                             "$10, " // bits
-                             "$11, " // nonce
-                             "$12, " // difficulty
-
-                             "$13, " // chain_work
-                             "$14, " // outputs_count
-                             "$15, " // inputs_count
-
-                             "$16, " // total_output_value
-                             "$17, " // total_input_value
-                             "$18, " // total_fees
-
-                             "$19, " // total_size
-                             "$20, " // total_vsize
-                             "$21, " // total_weight
-
-                             "$22, " // fee_rates
-                             "$23, " // output_data
-                             "$24, " // input_data
-
-                             "$25, " // transaction_data
-                             "$26, " // output_script_types
-                             "$27, " // input_script_types
-
-                             "$28, " // output_legacy_signature_operations
-                             "$29, " // input_legacy_signature_operations
-                             "$30, " // input_p2sh_signature_operations
-                             "$31, " // input_witness_signature_operations
-
-                             "$32, " // outputs_total_size
-                             "$33, " // inputs_total_size
-                             "$34, " // net_utxo_size_impact
-
-                             "$35, " // hash_prev_block
-                             "$36, "   // network
-
-                             "$37, " // nonstandard_create_count
-                             "$38, " // pubkey_create_count
-                             "$39, " // pubkeyhash_create_count
-                             "$40, " // scripthash_create_count
-                             "$41, " // multisig_create_count
-                             "$42, " // null_data_create_count
-                             "$43, " // witness_v0_keyhash_create_count
-                             "$44, " // witness_v0_scripthash_create_count
-                             "$45, " // witness_v1_taproot_create_count
-                             "$46, " // witness_unknown_create_count
-
-                             "$47, " // nonstandard_spend_count
-                             "$48, " // pubkey_spend_count
-                             "$49, " // pubkeyhash_spend_count
-                             "$50, " // scripthash_spend_count
-                             "$51, " // multisig_spend_count
-                             "$52, " // null_data_spend_count
-                             "$53, " // witness_v0_keyhash_spend_count
-                             "$54, " // witness_v0_scripthash_spend_count
-                             "$55, " // witness_v1_taproot_spend_count
-                             "$56, " // witness_unknown_spend_count
-                             "$57, "  // coinbase
-
-                             "$58, "  // ordinals_weight
-                             "$59, "  // ordinals_count
-                             "$60, "  // ordinals_size
-                             "$61, "  // ordinals_vsize
-                             "$62, "  // ordinals_fees
-
-                             "$63, "  // non_ordinals_weight
-                             "$64, "  // non_ordinals_count
-                             "$65, "  // non_ordinals_size
-                             "$66, "  // non_ordinals_vsize
-                             "$67 "  // non_ordinals_fees
-
-                             ") ON CONFLICT DO NOTHING ;"
-    );
-    w.exec(pqxx::prepped{"InsertBlock"}, pqxx::params{
-            block.GetBlockHeader().GetHash().GetHex(),                   // hash
-            block_index->hashMerkleRoot.GetHex(), // merkle_root
-            block_index->GetBlockTime(),          // time
-
-            block_index->GetMedianTimePast(),     // median_time
-            block_index->nHeight,                 // height
-            GetBlockSubsidy(block_index->nHeight, Params().GetConsensus()), // subsidy
-
-            block_index->nTx,                     // transactions_count
-            block_index->nVersion,                // version
-            block_index->nStatus,                 // status
-
-            block_index->nBits,                   // bits
-            block_index->nNonce,                  // nonce
-            GetDifficulty(*block_index),         // difficulty
-
-            block_index->nChainWork.GetHex(),      // chain_work
-            outputs_count,
-
-            inputs_count,
+    BlockInsertData data{
+            block.GetBlockHeader().GetHash().GetHex(),
+            block_index->hashMerkleRoot.GetHex(),
+            block_index->GetBlockTime(),
+            block_index->GetMedianTimePast(),
+            block_index->nHeight,
+            GetBlockSubsidy(block_index->nHeight, Params().GetConsensus()),
+            static_cast<int64_t>(block_index->nTx),
+            static_cast<int64_t>(block_index->nVersion),
+            static_cast<int64_t>(block_index->nStatus),
+            static_cast<int64_t>(block_index->nBits),
+            static_cast<int64_t>(block_index->nNonce),
+            GetDifficulty(*block_index),
+            block_index->nChainWork.GetHex(),
+            static_cast<int64_t>(outputs_count),
+            static_cast<int64_t>(inputs_count),
             total_output_value,
             total_input_value,
             total_fees,
-
-            GetSerializeSize(TX_WITH_WITNESS(block)),
-            GetBlockWeight(block) / WITNESS_SCALE_FACTOR,
-            GetBlockWeight(block),
-
+            static_cast<int64_t>(GetSerializeSize(TX_WITH_WITNESS(block))),
+            static_cast<int64_t>(GetBlockWeight(block) / WITNESS_SCALE_FACTOR),
+            static_cast<int64_t>(GetBlockWeight(block)),
             fee_rates_string_stream.str(),
             output_data_string_stream.str(),
             input_data_string_stream.str(),
-
             transaction_data_string_stream.str(),
             output_script_types_string_stream.str(),
             input_script_types_string_stream.str(),
-
-            block_output_legacy_signature_operations,
-            block_input_legacy_signature_operations,
-            block_input_p2sh_signature_operations,
-            block_input_witness_signature_operations,
-
-            block_outputs_total_size,
-            block_inputs_total_size,
-            block_net_utxo_size_impact,
+            static_cast<int64_t>(block_output_legacy_signature_operations),
+            static_cast<int64_t>(block_input_legacy_signature_operations),
+            static_cast<int64_t>(block_input_p2sh_signature_operations),
+            static_cast<int64_t>(block_input_witness_signature_operations),
+            static_cast<int64_t>(block_outputs_total_size),
+            static_cast<int64_t>(block_inputs_total_size),
+            static_cast<int64_t>(block_net_utxo_size_impact),
             block.GetBlockHeader().hashPrevBlock.ToString(),
-
-            ChainToString(),                                        // network
-            nonstandard_create_count,
-            pubkey_create_count,
-            pubkeyhash_create_count,
-            scripthash_create_count,
-            multisig_create_count,
-            null_data_create_count,
-            witness_v0_keyhash_create_count,
-            witness_v0_scripthash_create_count,
-            witness_v1_taproot_create_count,
-            witness_unknown_create_count,
-
-            nonstandard_spend_count,
-            pubkey_spend_count,
-            pubkeyhash_spend_count,
-            scripthash_spend_count,
-            multisig_spend_count,
-            null_data_spend_count,
-            witness_v0_keyhash_spend_count,
-            witness_v0_scripthash_spend_count,
-            witness_v1_taproot_spend_count,
-            witness_unknown_spend_count,
-            coinbase,
-
-            ordinals_weight,
-            ordinals_count,
-            ordinals_size,
-            ordinals_vsize,
-            ordinals_fees,
-
-            non_ordinals_weight,
-            non_ordinals_count,
-            non_ordinals_size,
-            non_ordinals_vsize,
-            non_ordinals_fees
-
-    });
-    w.commit();
+            ChainToString(),
+            static_cast<int64_t>(nonstandard_create_count),
+            static_cast<int64_t>(pubkey_create_count),
+            static_cast<int64_t>(pubkeyhash_create_count),
+            static_cast<int64_t>(scripthash_create_count),
+            static_cast<int64_t>(multisig_create_count),
+            static_cast<int64_t>(null_data_create_count),
+            static_cast<int64_t>(witness_v0_keyhash_create_count),
+            static_cast<int64_t>(witness_v0_scripthash_create_count),
+            static_cast<int64_t>(witness_v1_taproot_create_count),
+            static_cast<int64_t>(witness_unknown_create_count),
+            static_cast<int64_t>(nonstandard_spend_count),
+            static_cast<int64_t>(pubkey_spend_count),
+            static_cast<int64_t>(pubkeyhash_spend_count),
+            static_cast<int64_t>(scripthash_spend_count),
+            static_cast<int64_t>(multisig_spend_count),
+            static_cast<int64_t>(null_data_spend_count),
+            static_cast<int64_t>(witness_v0_keyhash_spend_count),
+            static_cast<int64_t>(witness_v0_scripthash_spend_count),
+            static_cast<int64_t>(witness_v1_taproot_spend_count),
+            static_cast<int64_t>(witness_unknown_spend_count),
+            static_cast<int64_t>(coinbase),
+            static_cast<int64_t>(ordinals_weight),
+            static_cast<int64_t>(ordinals_count),
+            static_cast<int64_t>(ordinals_size),
+            static_cast<int64_t>(ordinals_vsize),
+            static_cast<int64_t>(ordinals_fees),
+            static_cast<int64_t>(non_ordinals_weight),
+            static_cast<int64_t>(non_ordinals_count),
+            static_cast<int64_t>(non_ordinals_size),
+            static_cast<int64_t>(non_ordinals_vsize),
+            static_cast<int64_t>(non_ordinals_fees)
+    };
+    EnqueueBlockInsert(std::move(data));
 }
 
 TransactionData::TransactionData(std::size_t transaction_index, const CTransactionRef &transaction) :
