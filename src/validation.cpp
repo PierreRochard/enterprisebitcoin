@@ -2529,7 +2529,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     pcursor = CHECK_NONFATAL(this->CoinsDB().Cursor());
     try {
         BlockToSql block_to_sql(pindex, block, view, flags, pcursor.get());
-        if (pindex->nHeight % 4032 == 0 && pindex->nHeight > 867628) {
+        if (pindex->nHeight % 4032 == 0) {
             UtxoSetToSql utxo_set_to_sql(pindex, block, view, flags, pcursor.get());
         }
     } catch (const std::exception& e) {
