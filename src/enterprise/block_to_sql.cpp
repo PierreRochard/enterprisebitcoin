@@ -19,8 +19,10 @@
 #include <cmath> // Include for std::round
 #include <array>
 #include <algorithm>
+#include <atomic>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -49,6 +51,34 @@ std::string ChainToString() {
 }
 
 namespace {
+
+std::atomic<int64_t> g_exported_max_height{-1};
+std::once_flag g_exported_height_loaded;
+
+int64_t DbMaxHeightForNetwork(const std::string& network)
+{
+    std::call_once(g_exported_height_loaded, [&] {
+        try {
+            auto& conn = enterprise::PgConnection();
+            pqxx::work w(conn);
+            const auto res = w.exec(pqxx::zview{"SELECT COALESCE(MAX(height), -1) FROM blocks WHERE network = $1"},
+                                    pqxx::params{network});
+            g_exported_max_height.store(res.empty() ? -1 : res[0][0].as<int64_t>());
+            w.commit();
+        } catch (const std::exception& e) {
+            LogWarning("Enterprise DB worker failed to fetch max block height: %s", e.what());
+            g_exported_max_height.store(-1);
+        }
+    });
+    return g_exported_max_height.load();
+}
+
+void UpdateExportedHeight(int64_t height)
+{
+    int64_t prev = g_exported_max_height.load();
+    while (height > prev && !g_exported_max_height.compare_exchange_weak(prev, height)) {
+    }
+}
 
 struct BlockInsertData {
     std::string hash;
@@ -399,6 +429,12 @@ inline void EnqueueBlockInsert(BlockInsertData&& data)
 BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, script_verify_flags flags,
                        CCoinsViewCursor *cursor) {
     static constexpr size_t PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
+    const std::string network = ChainToString();
+    const int64_t db_max_height = DbMaxHeightForNetwork(network);
+    if (db_max_height >= 0 && block_index->nHeight <= db_max_height) {
+        // Skip exporting blocks that are not ahead of what the database already has.
+        return;
+    }
 
     std::map<CAmount, unsigned int> fee_rates;
 
@@ -875,7 +911,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             static_cast<int64_t>(block_inputs_total_size),
             static_cast<int64_t>(block_net_utxo_size_impact),
             block.GetBlockHeader().hashPrevBlock.ToString(),
-            ChainToString(),
+            network,
             static_cast<int64_t>(nonstandard_create_count),
             static_cast<int64_t>(pubkey_create_count),
             static_cast<int64_t>(pubkeyhash_create_count),
@@ -909,6 +945,7 @@ BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsView
             static_cast<int64_t>(non_ordinals_fees)
     };
     EnqueueBlockInsert(std::move(data));
+    UpdateExportedHeight(block_index->nHeight);
 }
 
 TransactionData::TransactionData(std::size_t transaction_index, const CTransactionRef &transaction) :

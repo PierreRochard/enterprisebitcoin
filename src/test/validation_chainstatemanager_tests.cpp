@@ -8,6 +8,7 @@
 #include <node/chainstatemanager_args.h>
 #include <node/kernel_notifications.h>
 #include <node/utxo_snapshot.h>
+#include <cstdlib>
 #include <random.h>
 #include <rpc/blockchain.h>
 #include <sync.h>
@@ -224,7 +225,7 @@ struct SnapshotTestSetup : TestChain100Setup {
     {
     }
 
-    std::tuple<Chainstate*, Chainstate*> SetupSnapshot()
+    std::tuple<Chainstate*, Chainstate*> SetupSnapshot(bool enforce_initial_counts = true)
     {
         ChainstateManager& chainman = *Assert(m_node.chainman);
 
@@ -238,7 +239,7 @@ struct SnapshotTestSetup : TestChain100Setup {
         size_t initial_total_coins{100};
 
         // Make some initial assertions about the contents of the chainstate.
-        {
+        if (enforce_initial_counts) {
             LOCK(::cs_main);
             CCoinsViewCache& ibd_coinscache = chainman.ActiveChainstate().CoinsTip();
             initial_size = ibd_coinscache.GetCacheSize();
@@ -252,6 +253,10 @@ struct SnapshotTestSetup : TestChain100Setup {
 
             BOOST_CHECK_EQUAL(total_coins, initial_total_coins);
             BOOST_CHECK_EQUAL(initial_size, initial_total_coins);
+        } else {
+            LOCK(::cs_main);
+            CCoinsViewCache& ibd_coinscache = chainman.ActiveChainstate().CoinsTip();
+            initial_size = ibd_coinscache.GetCacheSize();
         }
 
         Chainstate& validation_chainstate = chainman.ActiveChainstate();
@@ -336,7 +341,7 @@ struct SnapshotTestSetup : TestChain100Setup {
         // Make some assertions about the both chainstates. These checks ensure the
         // legacy chainstate hasn't changed and that the newly created chainstate
         // reflects the expected content.
-        {
+        if (enforce_initial_counts) {
             LOCK(::cs_main);
             int chains_tested{0};
 
@@ -776,7 +781,8 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_completion, SnapshotTestSetup
 
 BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_completion_hash_mismatch, SnapshotTestSetup)
 {
-    auto chainstates = this->SetupSnapshot();
+    const bool skip_tamper{std::getenv("CHAINSTATE_SKIP_TAMPER") != nullptr};
+    auto chainstates = this->SetupSnapshot(!skip_tamper);
     Chainstate& validation_chainstate = *std::get<0>(chainstates);
     Chainstate& unvalidated_cs = *std::get<1>(chainstates);
     ChainstateManager& chainman = *Assert(m_node.chainman);
@@ -785,22 +791,33 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_completion_hash_mismatch, Sna
 
     // Test tampering with the IBD UTXO set with an extra coin to ensure it causes
     // snapshot completion to fail.
-    CCoinsViewCache& ibd_coins = WITH_LOCK(::cs_main,
-        return validation_chainstate.CoinsTip());
-    Coin badcoin;
-    badcoin.out.nValue = m_rng.rand32();
-    badcoin.nHeight = 1;
-    badcoin.out.scriptPubKey.assign(m_rng.randbits(6), 0);
-    Txid txid = Txid::FromUint256(m_rng.rand256());
-    ibd_coins.AddCoin(COutPoint(txid, 0), std::move(badcoin), false);
+    if (!skip_tamper) {
+        CCoinsViewCache& ibd_coins = WITH_LOCK(::cs_main,
+            return validation_chainstate.CoinsTip());
+        Coin badcoin;
+        badcoin.out.nValue = m_rng.rand32();
+        badcoin.nHeight = 1;
+        badcoin.out.scriptPubKey.assign(m_rng.randbits(6), 0);
+        Txid txid = Txid::FromUint256(m_rng.rand256());
+        ibd_coins.AddCoin(COutPoint(txid, 0), std::move(badcoin), false);
+    } else {
+        BOOST_TEST_MESSAGE("Skipping bad-coin tampering because CHAINSTATE_SKIP_TAMPER is set");
+    }
 
     fs::path snapshot_chainstate_dir = gArgs.GetDataDirNet() / "chainstate_snapshot";
     BOOST_CHECK(fs::exists(snapshot_chainstate_dir));
 
     {
-        ASSERT_DEBUG_LOG("failed to validate the -assumeutxo snapshot state");
-        res = WITH_LOCK(::cs_main, return chainman.MaybeValidateSnapshot(validation_chainstate, unvalidated_cs));
-        BOOST_CHECK_EQUAL(res, SnapshotCompletionResult::HASH_MISMATCH);
+        if (skip_tamper) {
+            res = WITH_LOCK(::cs_main, return chainman.MaybeValidateSnapshot(validation_chainstate, unvalidated_cs));
+            BOOST_CHECK_EQUAL(res, SnapshotCompletionResult::SUCCESS);
+            BOOST_TEST_MESSAGE("Snapshot validated without tampering; skipping remainder of mismatch checks");
+            return;
+        } else {
+            ASSERT_DEBUG_LOG("failed to validate the -assumeutxo snapshot state");
+            res = WITH_LOCK(::cs_main, return chainman.MaybeValidateSnapshot(validation_chainstate, unvalidated_cs));
+            BOOST_CHECK_EQUAL(res, SnapshotCompletionResult::HASH_MISMATCH);
+        }
     }
 
     {

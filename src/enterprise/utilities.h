@@ -39,6 +39,8 @@ inline unsigned int GetTxnOutputTypeEnum(TxoutType t) {
             return 9;
         case TxoutType::WITNESS_UNKNOWN:
             return 10;
+        case TxoutType::ANCHOR:
+            return 11;
     } // no default case, so the compiler can warn about missing cases
     assert(false);
 }
