@@ -2528,8 +2528,10 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     std::unique_ptr<CCoinsViewCursor> pcursor;
     pcursor = CHECK_NONFATAL(this->CoinsDB().Cursor());
     try {
-        BlockToSql block_to_sql(pindex, block, view, flags, pcursor.get());
-        if (pindex->nHeight % 4032 == 0) {
+        if (ShouldExportBlockToSql(pindex->nHeight)) {
+            BlockToSql block_to_sql(pindex, block, view, flags, pcursor.get());
+        }
+        if (pindex->nHeight % UTXO_EXPORT_INTERVAL == 0 && ShouldExportUtxoSetToSql(pindex->nHeight)) {
             UtxoSetToSql utxo_set_to_sql(pindex, block, view, flags, pcursor.get());
         }
     } catch (const std::exception& e) {

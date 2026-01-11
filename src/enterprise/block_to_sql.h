@@ -50,4 +50,6 @@ public:
                CCoinsViewCursor *cursor);
 };
 
+bool ShouldExportBlockToSql(int64_t height);
+
 #endif //BLOCK_TO_SQL_H

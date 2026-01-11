@@ -15,12 +15,15 @@
 #include <common/system.h>
 #include <common/args.h>
 #include <rpc/blockchain.h>
+#include <atomic>
 #include <cmath>
 #include <ctime>
+#include <mutex>
 #include <string>
 #include <algorithm>
 #include <string_view>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 
 #include <enterprise/utxo_set_to_sql.h>
@@ -57,6 +60,70 @@ std::map<int, double> calculatePercentiles(std::vector<double>& data) {
 }
 
 namespace {
+
+std::atomic<int64_t> g_exported_max_height{-1};
+std::once_flag g_exported_height_loaded;
+std::once_flag g_missing_heights_loaded;
+std::mutex g_missing_heights_mutex;
+std::unordered_set<int64_t> g_missing_heights;
+
+int64_t DbMaxUtxoHeight()
+{
+    std::call_once(g_exported_height_loaded, [&] {
+        try {
+            auto& conn = enterprise::PgConnection();
+            pqxx::work w(conn);
+            const auto res = w.exec(pqxx::zview{"SELECT COALESCE(MAX(block_height), -1) FROM utxo_age"});
+            g_exported_max_height.store(res.empty() ? -1 : res[0][0].as<int64_t>());
+            w.commit();
+        } catch (const std::exception& e) {
+            LogWarning("Enterprise DB worker failed to fetch max UTXO block height: %s", e.what());
+            g_exported_max_height.store(-1);
+        }
+    });
+    return g_exported_max_height.load();
+}
+
+void LoadMissingUtxoHeights()
+{
+    std::call_once(g_missing_heights_loaded, [&] {
+        try {
+            auto& conn = enterprise::PgConnection();
+            pqxx::work w(conn);
+            const auto res = w.exec(pqxx::zview{
+                "SELECT s "
+                "FROM generate_series(0, (SELECT COALESCE(MAX(block_height), 0) FROM utxo_age), $1) AS s "
+                "LEFT JOIN (SELECT DISTINCT block_height FROM utxo_age) u ON u.block_height = s "
+                "WHERE u.block_height IS NULL"
+            }, pqxx::params{UTXO_EXPORT_INTERVAL});
+            w.commit();
+            std::lock_guard<std::mutex> lock(g_missing_heights_mutex);
+            g_missing_heights.reserve(res.size());
+            for (const auto& row : res) {
+                g_missing_heights.insert(row[0].as<int64_t>());
+            }
+        } catch (const std::exception& e) {
+            LogWarning("Enterprise DB worker failed to fetch missing UTXO block heights: %s", e.what());
+        }
+    });
+}
+
+bool IsMissingUtxoHeight(int64_t height)
+{
+    if (height < 0) {
+        return false;
+    }
+    LoadMissingUtxoHeights();
+    std::lock_guard<std::mutex> lock(g_missing_heights_mutex);
+    return g_missing_heights.find(height) != g_missing_heights.end();
+}
+
+void UpdateExportedUtxoHeight(int64_t height)
+{
+    int64_t prev = g_exported_max_height.load();
+    while (height > prev && !g_exported_max_height.compare_exchange_weak(prev, height)) {
+    }
+}
 
 struct UtxoAgeRow {
     unsigned int weeks_old;
@@ -193,12 +260,31 @@ void EnqueueUtxoInsert(UtxoSetExportData&& data)
 
 } // namespace
 
+bool ShouldExportUtxoSetToSql(int64_t height)
+{
+    if (height % UTXO_EXPORT_INTERVAL != 0) {
+        return false;
+    }
+    const int64_t db_max_height = DbMaxUtxoHeight();
+    if (db_max_height < 0 || height > db_max_height) {
+        return true;
+    }
+    if (IsMissingUtxoHeight(height)) {
+        return true;
+    }
+    LogInfo("UtxoSetToSql: Block %d already exported, skipping", height);
+    return false;
+}
+
 UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, script_verify_flags flags,
                            CCoinsViewCursor *cursor) {
 
     (void)flags; // currently unused; kept for interface symmetry
 
     int block_height = block_index->nHeight;
+    if (!ShouldExportUtxoSetToSql(block_height)) {
+        return;
+    }
 
     int64_t median_time_int = block_index->GetMedianTimePast();
     time_t median_time_time = static_cast<time_t>(median_time_int);
@@ -370,6 +456,7 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
     };
 
     EnqueueUtxoInsert(std::move(export_data));
+    UpdateExportedUtxoHeight(block_height);
 
     LogInfo("UtxoSetToSql: Block %d queued, %d UTXOs, %d bytes", block_height, total_count, total_size);
 

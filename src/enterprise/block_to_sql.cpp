@@ -24,6 +24,7 @@
 #include <map>
 #include <mutex>
 #include <sstream>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -54,6 +55,9 @@ namespace {
 
 std::atomic<int64_t> g_exported_max_height{-1};
 std::once_flag g_exported_height_loaded;
+std::once_flag g_missing_heights_loaded;
+std::mutex g_missing_heights_mutex;
+std::unordered_set<int64_t> g_missing_heights;
 
 int64_t DbMaxHeightForNetwork(const std::string& network)
 {
@@ -71,6 +75,50 @@ int64_t DbMaxHeightForNetwork(const std::string& network)
         }
     });
     return g_exported_max_height.load();
+}
+
+void LoadMissingBlockHeights(const std::string& network)
+{
+    std::call_once(g_missing_heights_loaded, [&] {
+        try {
+            auto& conn = enterprise::PgConnection();
+            pqxx::work w(conn);
+            const auto res = w.exec(pqxx::zview{
+                "SELECT s "
+                "FROM generate_series(1, (SELECT COALESCE(MAX(height), 0) FROM blocks WHERE network = $1)) AS s "
+                "LEFT JOIN blocks b ON b.height = s AND b.network = $1 "
+                "WHERE b.height IS NULL"
+            }, pqxx::params{network});
+            w.commit();
+            std::lock_guard<std::mutex> lock(g_missing_heights_mutex);
+            g_missing_heights.reserve(res.size());
+            for (const auto& row : res) {
+                g_missing_heights.insert(row[0].as<int64_t>());
+            }
+        } catch (const std::exception& e) {
+            LogWarning("Enterprise DB worker failed to fetch missing block heights: %s", e.what());
+        }
+    });
+}
+
+bool IsMissingBlockHeight(int64_t height, const std::string& network)
+{
+    if (height <= 0) {
+        return false;
+    }
+    LoadMissingBlockHeights(network);
+    std::lock_guard<std::mutex> lock(g_missing_heights_mutex);
+    return g_missing_heights.find(height) != g_missing_heights.end();
+}
+
+bool ShouldExportBlockToSqlInternal(int64_t height, const std::string& network)
+{
+    LoadMissingBlockHeights(network);
+    const int64_t db_max_height = DbMaxHeightForNetwork(network);
+    if (db_max_height < 0 || height > db_max_height) {
+        return true;
+    }
+    return IsMissingBlockHeight(height, network);
 }
 
 void UpdateExportedHeight(int64_t height)
@@ -425,14 +473,18 @@ inline void EnqueueBlockInsert(BlockInsertData&& data)
 
 } // namespace
 
+bool ShouldExportBlockToSql(int64_t height)
+{
+    return ShouldExportBlockToSqlInternal(height, ChainToString());
+}
+
 
 BlockToSql::BlockToSql(CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, script_verify_flags flags,
                        CCoinsViewCursor *cursor) {
     static constexpr size_t PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
     const std::string network = ChainToString();
-    const int64_t db_max_height = DbMaxHeightForNetwork(network);
-    if (db_max_height >= 0 && block_index->nHeight <= db_max_height) {
-        // Skip exporting blocks that are not ahead of what the database already has.
+    if (!ShouldExportBlockToSqlInternal(block_index->nHeight, network)) {
+        // Skip exporting blocks that already exist in the database.
         return;
     }
 
