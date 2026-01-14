@@ -54,6 +54,7 @@ std::string ChainToString() {
 namespace {
 
 std::atomic<int64_t> g_exported_max_height{-1};
+std::atomic<int64_t> g_initial_exported_max_height{-1};
 std::once_flag g_exported_height_loaded;
 std::once_flag g_missing_heights_loaded;
 std::mutex g_missing_heights_mutex;
@@ -67,11 +68,14 @@ int64_t DbMaxHeightForNetwork(const std::string& network)
             pqxx::work w(conn);
             const auto res = w.exec(pqxx::zview{"SELECT COALESCE(MAX(height), -1) FROM blocks WHERE network = $1"},
                                     pqxx::params{network});
-            g_exported_max_height.store(res.empty() ? -1 : res[0][0].as<int64_t>());
+            const int64_t db_height = res.empty() ? -1 : res[0][0].as<int64_t>();
+            g_exported_max_height.store(db_height);
+            g_initial_exported_max_height.store(db_height);
             w.commit();
         } catch (const std::exception& e) {
             LogWarning("Enterprise DB worker failed to fetch max block height: %s", e.what());
             g_exported_max_height.store(-1);
+            g_initial_exported_max_height.store(-1);
         }
     });
     return g_exported_max_height.load();
@@ -115,7 +119,11 @@ bool ShouldExportBlockToSqlInternal(int64_t height, const std::string& network)
 {
     LoadMissingBlockHeights(network);
     const int64_t db_max_height = DbMaxHeightForNetwork(network);
+    const int64_t initial_max_height = g_initial_exported_max_height.load();
     if (db_max_height < 0 || height > db_max_height) {
+        return true;
+    }
+    if (initial_max_height >= 0 && height > initial_max_height) {
         return true;
     }
     return IsMissingBlockHeight(height, network);

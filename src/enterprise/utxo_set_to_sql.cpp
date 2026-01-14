@@ -23,8 +23,10 @@
 #include <algorithm>
 #include <string_view>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <limits>
 
 #include <enterprise/utxo_set_to_sql.h>
 #include <enterprise/utilities.h>
@@ -62,6 +64,7 @@ std::map<int, double> calculatePercentiles(std::vector<double>& data) {
 namespace {
 
 std::atomic<int64_t> g_exported_max_height{-1};
+std::atomic<int64_t> g_initial_exported_max_height{-1};
 std::once_flag g_exported_height_loaded;
 std::once_flag g_missing_heights_loaded;
 std::mutex g_missing_heights_mutex;
@@ -74,11 +77,14 @@ int64_t DbMaxUtxoHeight()
             auto& conn = enterprise::PgConnection();
             pqxx::work w(conn);
             const auto res = w.exec(pqxx::zview{"SELECT COALESCE(MAX(block_height), -1) FROM utxo_age"});
-            g_exported_max_height.store(res.empty() ? -1 : res[0][0].as<int64_t>());
+            const int64_t db_height = res.empty() ? -1 : res[0][0].as<int64_t>();
+            g_exported_max_height.store(db_height);
+            g_initial_exported_max_height.store(db_height);
             w.commit();
         } catch (const std::exception& e) {
             LogWarning("Enterprise DB worker failed to fetch max UTXO block height: %s", e.what());
             g_exported_max_height.store(-1);
+            g_initial_exported_max_height.store(-1);
         }
     });
     return g_exported_max_height.load();
@@ -162,6 +168,18 @@ struct UtxoPercentileRow {
     double utxo_value;
 };
 
+struct AddressBalanceBucketRow {
+    int64_t lower_bound;
+    int64_t upper_bound;
+    uint64_t address_count;
+};
+
+struct AddressBalanceBucketUsdRow {
+    int64_t lower_bound_cents;
+    int64_t upper_bound_cents;
+    uint64_t address_count;
+};
+
 struct UtxoScriptTypeRow {
     std::string script_type;
     CAmount utxo_value;
@@ -180,6 +198,8 @@ struct UtxoSetExportData {
     std::vector<UtxoBalanceUsdRow> utxo_balance_usd_rows;
     std::vector<UtxoPercentileRow> utxo_percentiles;
     std::vector<UtxoPercentileRow> utxo_usd_percentiles;
+    std::vector<AddressBalanceBucketRow> address_balance_bucket_rows;
+    std::vector<AddressBalanceBucketUsdRow> address_balance_bucket_usd_rows;
     std::vector<UtxoScriptTypeRow> script_type_rows;
 };
 
@@ -187,6 +207,16 @@ void EnqueueUtxoInsert(UtxoSetExportData&& data)
 {
     enterprise::DbWorkQueue::Instance().Enqueue([data = std::move(data)](pqxx::connection& conn) mutable {
         pqxx::work w(conn);
+
+        // Make exports idempotent by replacing any rows for this block height.
+        w.exec(pqxx::zview{"DELETE FROM utxo_age WHERE block_height = $1"}, pqxx::params{data.block_height});
+        w.exec(pqxx::zview{"DELETE FROM utxo_balances WHERE block_height = $1"}, pqxx::params{data.block_height});
+        w.exec(pqxx::zview{"DELETE FROM utxo_balances_usd WHERE block_height = $1"}, pqxx::params{data.block_height});
+        w.exec(pqxx::zview{"DELETE FROM utxo_balances_percentiles WHERE block_height = $1"}, pqxx::params{data.block_height});
+        w.exec(pqxx::zview{"DELETE FROM utxo_balances_usd_percentiles WHERE block_height = $1"}, pqxx::params{data.block_height});
+        w.exec(pqxx::zview{"DELETE FROM address_balance_buckets WHERE block_height = $1"}, pqxx::params{data.block_height});
+        w.exec(pqxx::zview{"DELETE FROM address_balance_buckets_usd WHERE block_height = $1"}, pqxx::params{data.block_height});
+        w.exec(pqxx::zview{"DELETE FROM utxo_script_types WHERE block_height = $1"}, pqxx::params{data.block_height});
 
         auto stream_age = pqxx::stream_to::table(
                 w,
@@ -242,6 +272,24 @@ void EnqueueUtxoInsert(UtxoSetExportData&& data)
         }
         stream_usd_percentiles.complete();
 
+        auto stream_address_buckets = pqxx::stream_to::table(
+                w,
+                pqxx::table_path{"address_balance_buckets"},
+                {std::string_view{"block_height"}, std::string_view{"median_time"}, std::string_view{"lower_bound"}, std::string_view{"upper_bound"}, std::string_view{"address_count"}});
+        for (const auto& row : data.address_balance_bucket_rows) {
+            stream_address_buckets.write_values(data.block_height, data.median_time, row.lower_bound, row.upper_bound, row.address_count);
+        }
+        stream_address_buckets.complete();
+
+        auto stream_address_buckets_usd = pqxx::stream_to::table(
+                w,
+                pqxx::table_path{"address_balance_buckets_usd"},
+                {std::string_view{"block_height"}, std::string_view{"median_time"}, std::string_view{"lower_bound_cents"}, std::string_view{"upper_bound_cents"}, std::string_view{"address_count"}});
+        for (const auto& row : data.address_balance_bucket_usd_rows) {
+            stream_address_buckets_usd.write_values(data.block_height, data.median_time, row.lower_bound_cents, row.upper_bound_cents, row.address_count);
+        }
+        stream_address_buckets_usd.complete();
+
         auto stream_script = pqxx::stream_to::table(
                 w,
                 pqxx::table_path{"utxo_script_types"},
@@ -266,7 +314,11 @@ bool ShouldExportUtxoSetToSql(int64_t height)
         return false;
     }
     const int64_t db_max_height = DbMaxUtxoHeight();
+    const int64_t initial_max_height = g_initial_exported_max_height.load();
     if (db_max_height < 0 || height > db_max_height) {
+        return true;
+    }
+    if (initial_max_height >= 0 && height > initial_max_height) {
         return true;
     }
     if (IsMissingUtxoHeight(height)) {
@@ -307,6 +359,8 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
 
     std::vector<double> utxo_balance;
     std::vector<double> utxo_balance_usd;
+
+    std::unordered_map<std::string, CAmount> address_balances;
 
     auto& conn = enterprise::PgConnection();
     pqxx::work w1(conn);
@@ -377,6 +431,11 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         std::get<1>(script_type_tuple) += 1;
         std::get<2>(script_type_tuple) += utxo_size;
 
+        CTxDestination address;
+        if (ExtractDestination(coin.out.scriptPubKey, address)) {
+            address_balances[EncodeDestination(address)] += coin_value;
+        }
+
         cursor->Next();
     }
     LogInfo("Completed UTXO Set to SQL for block %d", block_height);
@@ -440,6 +499,64 @@ UtxoSetToSql::UtxoSetToSql(CBlockIndex *block_index, const CBlock &block, CCoins
         int percentile = entry.first;
         double utxo_value = entry.second;
         export_data.utxo_usd_percentiles.push_back({percentile, utxo_value});
+    }
+
+    static constexpr std::array<std::array<CAmount, 2>, 8> ADDRESS_BALANCE_BUCKETS{{
+        {0, COIN / 100},
+        {COIN / 100, COIN / 10},
+        {COIN / 10, COIN},
+        {COIN, 10 * COIN},
+        {10 * COIN, 100 * COIN},
+        {100 * COIN, 1000 * COIN},
+        {1000 * COIN, 10000 * COIN},
+        {10000 * COIN, std::numeric_limits<CAmount>::max()},
+    }};
+    std::array<uint64_t, ADDRESS_BALANCE_BUCKETS.size()> address_bucket_counts{};
+    std::array<uint64_t, ADDRESS_BALANCE_BUCKETS.size()> address_bucket_counts_usd{};
+    std::array<int64_t, ADDRESS_BALANCE_BUCKETS.size()> address_bucket_lower_usd_cents{};
+    std::array<int64_t, ADDRESS_BALANCE_BUCKETS.size()> address_bucket_upper_usd_cents{};
+    for (size_t i = 0; i < ADDRESS_BALANCE_BUCKETS.size(); ++i) {
+        const CAmount lower = ADDRESS_BALANCE_BUCKETS[i][0];
+        const CAmount upper = ADDRESS_BALANCE_BUCKETS[i][1];
+        address_bucket_lower_usd_cents[i] = static_cast<int64_t>(
+            std::llround(static_cast<double>(lower) / COIN * usd_price * 100.0));
+        if (upper == std::numeric_limits<CAmount>::max()) {
+            address_bucket_upper_usd_cents[i] = std::numeric_limits<int64_t>::max();
+        } else {
+            address_bucket_upper_usd_cents[i] = static_cast<int64_t>(
+                std::llround(static_cast<double>(upper) / COIN * usd_price * 100.0));
+        }
+    }
+    for (const auto& entry : address_balances) {
+        const CAmount balance = entry.second;
+        for (size_t i = 0; i < ADDRESS_BALANCE_BUCKETS.size(); ++i) {
+            const CAmount lower = ADDRESS_BALANCE_BUCKETS[i][0];
+            const CAmount upper = ADDRESS_BALANCE_BUCKETS[i][1];
+            if (balance >= lower && balance < upper) {
+                address_bucket_counts[i] += 1;
+                break;
+            }
+        }
+        const int64_t usd_cents = static_cast<int64_t>(
+            std::llround(static_cast<double>(balance) / COIN * usd_price * 100.0));
+        for (size_t i = 0; i < ADDRESS_BALANCE_BUCKETS.size(); ++i) {
+            if (usd_cents >= address_bucket_lower_usd_cents[i] && usd_cents < address_bucket_upper_usd_cents[i]) {
+                address_bucket_counts_usd[i] += 1;
+                break;
+            }
+        }
+    }
+    for (size_t i = 0; i < ADDRESS_BALANCE_BUCKETS.size(); ++i) {
+        export_data.address_balance_bucket_rows.push_back({
+            ADDRESS_BALANCE_BUCKETS[i][0],
+            ADDRESS_BALANCE_BUCKETS[i][1],
+            address_bucket_counts[i],
+        });
+        export_data.address_balance_bucket_usd_rows.push_back({
+            address_bucket_lower_usd_cents[i],
+            address_bucket_upper_usd_cents[i],
+            address_bucket_counts_usd[i],
+        });
     }
 
     for (const auto &entry : utxo_script_type_map) {

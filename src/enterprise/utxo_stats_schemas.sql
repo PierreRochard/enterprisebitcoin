@@ -61,6 +61,26 @@ CREATE TABLE utxo_balances_usd_percentiles (
 );
 CREATE UNIQUE INDEX utxo_balances_usd_percentiles_block_height_percentile_idx ON utxo_balances_usd_percentiles (block_height, percentile);
 
+CREATE TABLE address_balance_buckets (
+    id SERIAL PRIMARY KEY,
+    block_height BIGINT,
+    median_time TIMESTAMP,
+    lower_bound BIGINT,
+    upper_bound BIGINT,
+    address_count BIGINT
+);
+CREATE UNIQUE INDEX address_balance_buckets_block_height_bucket_idx ON address_balance_buckets (block_height, lower_bound, upper_bound);
+
+CREATE TABLE address_balance_buckets_usd (
+    id SERIAL PRIMARY KEY,
+    block_height BIGINT,
+    median_time TIMESTAMP,
+    lower_bound_cents BIGINT,
+    upper_bound_cents BIGINT,
+    address_count BIGINT
+);
+CREATE UNIQUE INDEX address_balance_buckets_usd_block_height_bucket_idx ON address_balance_buckets_usd (block_height, lower_bound_cents, upper_bound_cents);
+
 
 CREATE TABLE utxo_script_types (
     id SERIAL PRIMARY KEY,
@@ -76,4 +96,3 @@ CREATE TABLE utxo_script_types (
 );
 
 CREATE UNIQUE INDEX utxo_types_block_height_type_idx ON utxo_script_types (block_height, script_type);
-
