@@ -164,7 +164,7 @@ endif()
 
 option(ENABLE_ENTERPRISE "Build enterprise PostgreSQL exporters (block/UTXO to SQL)." OFF)
 if(ENABLE_ENTERPRISE)
-  find_package(libpqxx CONFIG REQUIRED)
+  find_package(libpqxx REQUIRED)
 endif()
 
 cmake_dependent_option(BUILD_GUI_TESTS "Build test_bitcoin-qt executable." ON "BUILD_GUI;BUILD_TESTS" OFF)
