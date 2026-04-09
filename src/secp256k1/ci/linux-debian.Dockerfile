@@ -2,17 +2,11 @@ FROM debian:stable-slim
 
 SHELL ["/bin/bash", "-c"]
 
-WORKDIR /root
-
 # A too high maximum number of file descriptors (with the default value
 # inherited from the docker host) can cause issues with some of our tools:
 #  - sanitizers hanging: https://github.com/google/sanitizers/issues/1662 
 #  - valgrind crashing: https://stackoverflow.com/a/75293014
 # This is not be a problem on our CI hosts, but developers who run the image
-# on their machines may run into this (e.g., on Arch Linux), so warn them.
-# (Note that .bashrc is only executed in interactive bash shells.)
-RUN echo 'if [[ $(ulimit -n) -gt 200000 ]]; then echo "WARNING: Very high value reported by \"ulimit -n\". Consider passing \"--ulimit nofile=32768\" to \"docker run\"."; fi' >> /root/.bashrc
-
 RUN dpkg --add-architecture i386 && \
     dpkg --add-architecture s390x && \
     dpkg --add-architecture armhf && \
@@ -81,7 +75,22 @@ RUN \
     apt-get autoremove -y wget && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-ENV VIRTUAL_ENV=/root/venv
-RUN python3 -m venv $VIRTUAL_ENV
+RUN useradd --create-home --shell /bin/bash ci && \
+    install -d -o ci -g ci \
+        /ci_container_base \
+        /ci_container_base/ci \
+        /ci_container_base/ci/scratch \
+        /ci_container_base/ci/scratch/ccache \
+        /ci_container_base/depends \
+        /ci_container_base/depends/built \
+        /ci_container_base/depends/sources \
+        /ci_container_base/prev_releases && \
+    echo 'if [[ $(ulimit -n) -gt 200000 ]]; then echo "WARNING: Very high value reported by \"ulimit -n\". Consider passing \"--ulimit nofile=32768\" to \"docker run\"."; fi' >> /home/ci/.bashrc && \
+    chown ci:ci /home/ci/.bashrc
+
+ENV VIRTUAL_ENV=/home/ci/venv
+RUN python3 -m venv $VIRTUAL_ENV && chown -R ci:ci $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+WORKDIR /home/ci
+USER ci
 RUN pip install lief
