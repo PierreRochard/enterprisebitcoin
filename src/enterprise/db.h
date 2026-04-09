@@ -9,6 +9,8 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_set>
+#include <vector>
 
 #include <logging.h>
 #include <pqxx/pqxx>
@@ -16,6 +18,42 @@
 #include <enterprise/dotenv.h>
 
 namespace enterprise {
+
+class ConnectionRegistry {
+public:
+    static ConnectionRegistry& Instance()
+    {
+        static ConnectionRegistry registry;
+        return registry;
+    }
+
+    void Register(pqxx::connection* conn)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_connections.insert(conn);
+    }
+
+    void CloseAll()
+    {
+        std::vector<pqxx::connection*> connections;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            connections.assign(m_connections.begin(), m_connections.end());
+        }
+        for (auto* conn : connections) {
+            if (conn == nullptr) continue;
+            try {
+                if (conn->is_open()) conn->close();
+            } catch (const std::exception& e) {
+                LogWarning("Enterprise DB close failed: %s", e.what());
+            }
+        }
+    }
+
+private:
+    std::mutex m_mutex;
+    std::unordered_set<pqxx::connection*> m_connections;
+};
 
 // Builds and caches the connection string from .env
 inline std::string PgConnInfo()
@@ -25,10 +63,16 @@ inline std::string PgConnInfo()
         dotenv.config();
         std::ostringstream s;
         s << "dbname=" << dotenv["PGDB"]
-          << " user=" << dotenv["PGUSER"]
-          << " password=" << dotenv["PGPASSWORD"]
-          << " hostaddr=" << dotenv["PGHOST"]
-          << " port=" << dotenv["PGPORT"];
+          << " user=" << dotenv["PGUSER"];
+        if (!dotenv["PGPASSWORD"].empty()) {
+            s << " password=" << dotenv["PGPASSWORD"];
+        }
+        if (!dotenv["PGHOST"].empty()) {
+            s << " host=" << dotenv["PGHOST"];
+        }
+        if (!dotenv["PGPORT"].empty()) {
+            s << " port=" << dotenv["PGPORT"];
+        }
         return s.str();
     }();
     return conninfo;
@@ -37,9 +81,12 @@ inline std::string PgConnInfo()
 // Thread-local connection provider to avoid reconnecting per block.
 inline pqxx::connection& PgConnection()
 {
-    thread_local std::unique_ptr<pqxx::connection> conn;
-    if (!conn || !conn->is_open()) {
-        conn = std::make_unique<pqxx::connection>(PgConnInfo());
+    // Keep the connection alive for the process lifetime and close it explicitly
+    // during init::Shutdown(), before libpqxx's own finalizers run.
+    thread_local pqxx::connection* conn{nullptr};
+    if (conn == nullptr || !conn->is_open()) {
+        conn = new pqxx::connection(PgConnInfo());
+        ConnectionRegistry::Instance().Register(conn);
     }
     return *conn;
 }
@@ -57,12 +104,16 @@ public:
     {
         {
             std::lock_guard<std::mutex> l(m_mutex);
+            if (m_shutdown) {
+                LogWarning("Enterprise DB worker is shutting down, dropping queued job");
+                return;
+            }
             m_jobs.push(std::move(job));
         }
         m_cv.notify_one();
     }
 
-    ~DbWorkQueue()
+    void Shutdown()
     {
         {
             std::lock_guard<std::mutex> l(m_mutex);
@@ -70,6 +121,11 @@ public:
         }
         m_cv.notify_all();
         if (m_worker.joinable()) m_worker.join();
+    }
+
+    ~DbWorkQueue()
+    {
+        Shutdown();
     }
 
 private:
@@ -105,6 +161,12 @@ private:
     bool m_shutdown{false};
     std::thread m_worker;
 };
+
+inline void ShutdownDb()
+{
+    DbWorkQueue::Instance().Shutdown();
+    ConnectionRegistry::Instance().CloseAll();
+}
 
 } // namespace enterprise
 

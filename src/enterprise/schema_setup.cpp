@@ -1,0 +1,157 @@
+#include <enterprise/schema_setup.h>
+
+#include <pqxx/pqxx>
+
+#include <array>
+#include <string>
+#include <string_view>
+
+namespace {
+
+struct SnapshotTableSpec {
+    std::string_view table;
+    std::string_view old_unique_index;
+    std::string_view new_unique_index;
+    std::string_view new_unique_columns;
+    std::string_view block_height_index;
+    std::string_view fk_name;
+};
+
+constexpr std::array<SnapshotTableSpec, 8> SNAPSHOT_TABLES{{
+    {"utxo_age", "utxo_age_block_height_weeks_old_idx", "utxo_age_network_hash_weeks_old_idx", "network, block_hash, weeks_old", "utxo_age_block_height_idx", "utxo_age_snapshot_fk"},
+    {"utxo_balances", "utxo_balances_block_height_balance_min_balance_max_idx", "utxo_balances_network_hash_bounds_idx", "network, block_hash, lower_bound, upper_bound", "utxo_balances_block_height_idx", "utxo_balances_snapshot_fk"},
+    {"utxo_balances_usd", "utxo_balances_usd_block_height_balance_min_balance_max_idx", "utxo_balances_usd_network_hash_bounds_idx", "network, block_hash, lower_bound, upper_bound", "utxo_balances_usd_block_height_idx", "utxo_balances_usd_snapshot_fk"},
+    {"utxo_balances_percentiles", "utxo_balances_percentiles_block_height_percentile_idx", "utxo_balances_percentiles_network_hash_percentile_idx", "network, block_hash, percentile", "utxo_balances_percentiles_block_height_idx", "utxo_balances_percentiles_snapshot_fk"},
+    {"utxo_balances_usd_percentiles", "utxo_balances_usd_percentiles_block_height_percentile_idx", "utxo_balances_usd_percentiles_network_hash_percentile_idx", "network, block_hash, percentile", "utxo_balances_usd_percentiles_block_height_idx", "utxo_balances_usd_percentiles_snapshot_fk"},
+    {"address_balance_buckets", "address_balance_buckets_block_height_bucket_idx", "address_balance_buckets_network_hash_bounds_idx", "network, block_hash, lower_bound, upper_bound", "address_balance_buckets_block_height_idx", "address_balance_buckets_snapshot_fk"},
+    {"address_balance_buckets_usd", "address_balance_buckets_usd_block_height_bucket_idx", "address_balance_buckets_usd_network_hash_bounds_idx", "network, block_hash, lower_bound_cents, upper_bound_cents", "address_balance_buckets_usd_block_height_idx", "address_balance_buckets_usd_snapshot_fk"},
+    {"utxo_script_types", "utxo_types_block_height_type_idx", "utxo_script_types_network_hash_type_idx", "network, block_hash, script_type", "utxo_script_types_block_height_idx", "utxo_script_types_snapshot_fk"},
+}};
+
+void Exec(pqxx::work& w, const std::string& sql)
+{
+    w.exec(sql);
+}
+
+void EnsureSnapshotColumns(pqxx::work& w, std::string_view table)
+{
+    Exec(w, "ALTER TABLE " + std::string(table) + " ADD COLUMN IF NOT EXISTS network TEXT");
+    Exec(w, "ALTER TABLE " + std::string(table) + " ADD COLUMN IF NOT EXISTS block_hash TEXT");
+}
+
+void EnsureSnapshotForeignKey(pqxx::work& w, const SnapshotTableSpec& spec)
+{
+    Exec(w,
+         "DO $$ "
+         "BEGIN "
+         "    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '" + std::string(spec.fk_name) + "') THEN "
+         "        ALTER TABLE " + std::string(spec.table) +
+         "            ADD CONSTRAINT " + std::string(spec.fk_name) +
+         "            FOREIGN KEY (network, block_hash) "
+         "            REFERENCES utxo_snapshots(network, block_hash) "
+         "            ON DELETE CASCADE; "
+         "    END IF; "
+         "END $$");
+}
+
+void EnsureSnapshotIndexes(pqxx::work& w, const SnapshotTableSpec& spec)
+{
+    Exec(w, "DROP INDEX IF EXISTS " + std::string(spec.old_unique_index));
+    Exec(w, "CREATE UNIQUE INDEX IF NOT EXISTS " + std::string(spec.new_unique_index) +
+                " ON " + std::string(spec.table) + " (" + std::string(spec.new_unique_columns) + ")");
+    Exec(w, "CREATE INDEX IF NOT EXISTS " + std::string(spec.block_height_index) +
+                " ON " + std::string(spec.table) + " (block_height)");
+}
+
+} // namespace
+
+namespace enterprise {
+
+void EnsureBlockExportSchema(pqxx::connection& conn, std::string_view network)
+{
+    const std::string network_name{network};
+    pqxx::work w(conn);
+    Exec(w, "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS network TEXT");
+    w.exec(
+        pqxx::zview{
+            "UPDATE blocks "
+            "SET network = $1 "
+            "WHERE network IS NULL "
+            "  AND EXISTS (SELECT 1 FROM blocks WHERE network IS NULL) "
+            "  AND NOT EXISTS (SELECT 1 FROM blocks WHERE network IS NOT NULL)"},
+        pqxx::params{network_name});
+    Exec(w, "CREATE INDEX IF NOT EXISTS blocks_network_height_idx ON blocks (network, height)");
+    Exec(w, "CREATE INDEX IF NOT EXISTS blocks_network_prev_hash_idx ON blocks (network, hash_prev_block)");
+    w.commit();
+}
+
+void EnsureUtxoSnapshotSchema(pqxx::connection& conn, std::string_view network)
+{
+    const std::string network_name{network};
+
+    EnsureBlockExportSchema(conn, network);
+
+    pqxx::work w(conn);
+    Exec(w,
+         "CREATE TABLE IF NOT EXISTS utxo_snapshots ("
+         "    network TEXT NOT NULL,"
+         "    block_hash TEXT NOT NULL,"
+         "    block_height BIGINT NOT NULL,"
+         "    median_time TIMESTAMP,"
+         "    exported_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+         "    PRIMARY KEY (network, block_hash),"
+         "    UNIQUE (network, block_height)"
+         ")");
+    Exec(w,
+         "CREATE TABLE IF NOT EXISTS utxo_snapshot_export_queue ("
+         "    network TEXT NOT NULL,"
+         "    block_hash TEXT NOT NULL,"
+         "    block_height BIGINT NOT NULL,"
+         "    payload TEXT NOT NULL,"
+         "    queued_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+         "    last_attempted_at TIMESTAMPTZ,"
+         "    attempt_count BIGINT NOT NULL DEFAULT 0,"
+         "    last_error TEXT,"
+         "    PRIMARY KEY (network, block_hash)"
+         ")");
+    Exec(w,
+         "CREATE INDEX IF NOT EXISTS utxo_snapshot_export_queue_network_height_idx "
+         "ON utxo_snapshot_export_queue (network, block_height)");
+
+    for (const auto& spec : SNAPSHOT_TABLES) {
+        EnsureSnapshotColumns(w, spec.table);
+    }
+
+    // Migrate legacy height-only rows to the current network/hash identity using the
+    // active-chain block rows that already exist in the blocks table.
+    w.exec(
+        pqxx::zview{
+            "INSERT INTO utxo_snapshots(network, block_hash, block_height, median_time) "
+            "SELECT $1, b.hash, u.block_height, COALESCE(MAX(u.median_time), (b.median_time AT TIME ZONE 'UTC')) "
+            "FROM utxo_age u "
+            "JOIN blocks b ON b.network = $1 AND b.height = u.block_height "
+            "WHERE u.network IS NULL OR u.block_hash IS NULL "
+            "GROUP BY b.hash, u.block_height, b.median_time "
+            "ON CONFLICT (network, block_hash) DO NOTHING"},
+        pqxx::params{network_name});
+
+    for (const auto& spec : SNAPSHOT_TABLES) {
+        const std::string update_query =
+            "UPDATE " + std::string(spec.table) + " t "
+            "SET network = s.network, block_hash = s.block_hash "
+            "FROM utxo_snapshots s "
+            "WHERE (t.network IS NULL OR t.block_hash IS NULL) "
+            "  AND t.block_height = s.block_height "
+            "  AND s.network = $1";
+        w.exec(update_query, pqxx::params{network_name});
+    }
+
+    for (const auto& spec : SNAPSHOT_TABLES) {
+        EnsureSnapshotForeignKey(w, spec);
+        EnsureSnapshotIndexes(w, spec);
+    }
+
+    w.commit();
+}
+
+} // namespace enterprise

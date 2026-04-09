@@ -21,6 +21,10 @@
 #include <consensus/amount.h>
 #include <consensus/consensus.h>
 #include <deploymentstatus.h>
+#ifdef ENABLE_ENTERPRISE
+#include <enterprise/db.h>
+#include <index/enterpriseblockindex.h>
+#endif
 #include <hash.h>
 #include <httprpc.h>
 #include <httpserver.h>
@@ -367,6 +371,9 @@ void Shutdown(NodeContext& node)
     if (g_txindex) g_txindex.reset();
     if (g_txospenderindex) g_txospenderindex.reset();
     if (g_coin_stats_index) g_coin_stats_index.reset();
+#ifdef ENABLE_ENTERPRISE
+    if (g_enterprise_block_index) g_enterprise_block_index.reset();
+#endif
     DestroyAllBlockFilterIndexes();
     node.indexes.clear(); // all instances are nullptr now
 
@@ -410,6 +417,10 @@ void Shutdown(NodeContext& node)
     node.scheduler.reset();
     node.ecc_context.reset();
     node.kernel.reset();
+
+#ifdef ENABLE_ENTERPRISE
+    enterprise::ShutdownDb();
+#endif
 
     RemovePidFile(*node.args);
 
@@ -1920,6 +1931,11 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
         g_coin_stats_index = std::make_unique<CoinStatsIndex>(interfaces::MakeChain(node), /*cache_size=*/0, false, do_reindex);
         node.indexes.emplace_back(g_coin_stats_index.get());
     }
+
+#ifdef ENABLE_ENTERPRISE
+    g_enterprise_block_index = std::make_unique<EnterpriseBlockIndex>(interfaces::MakeChain(node), /*cache_size=*/1 << 20, false, do_reindex);
+    node.indexes.emplace_back(g_enterprise_block_index.get());
+#endif
 
     // Init indexes
     for (auto index : node.indexes) if (!index->Init()) return false;

@@ -2521,17 +2521,12 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
 
     std::vector<PrecomputedTransactionData> txsdata(block.vtx.size());
 
-    // Enterprise SQL exporters: optional PostgreSQL sinks for block and UTXO snapshots.
+    // Enterprise SQL exporters: optional PostgreSQL sinks for UTXO snapshots.
 #ifdef ENABLE_ENTERPRISE
-    // flush the CoinsDB cache to disk
-    this->CoinsTip().Flush();
-    std::unique_ptr<CCoinsViewCursor> pcursor;
-    pcursor = CHECK_NONFATAL(this->CoinsDB().Cursor());
     try {
-        if (ShouldExportBlockToSql(pindex->nHeight)) {
-            BlockToSql block_to_sql(pindex, block, view, flags, pcursor.get());
-        }
-        if (pindex->nHeight % UTXO_EXPORT_INTERVAL == 0 && ShouldExportUtxoSetToSql(pindex->nHeight)) {
+        if (ShouldExportUtxoSetToSql(*pindex)) {
+            this->CoinsTip().Flush();
+            std::unique_ptr<CCoinsViewCursor> pcursor = CHECK_NONFATAL(this->CoinsDB().Cursor());
             UtxoSetToSql utxo_set_to_sql(pindex, block, view, flags, pcursor.get());
         }
     } catch (const std::exception& e) {
@@ -3011,6 +3006,13 @@ bool Chainstate::DisconnectTip(BlockValidationState& state, DisconnectedBlockTra
     if (m_chainman.m_options.signals) {
         m_chainman.m_options.signals->BlockDisconnected(std::move(pblock), pindexDelete);
     }
+#ifdef ENABLE_ENTERPRISE
+    try {
+        RemoveUtxoSnapshotFromSql(*pindexDelete);
+    } catch (const std::exception& e) {
+        LogWarning("Enterprise UTXO snapshot cleanup failed for block %s: %s", pindexDelete->GetBlockHash().ToString(), e.what());
+    }
+#endif
     return true;
 }
 

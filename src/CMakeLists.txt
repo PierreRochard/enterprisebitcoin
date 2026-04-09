@@ -300,8 +300,11 @@ endif()
 
 if(ENABLE_ENTERPRISE)
   target_sources(bitcoin_node PRIVATE
+    enterprise/common.cpp
     enterprise/block_to_sql.cpp
+    enterprise/schema_setup.cpp
     enterprise/utxo_set_to_sql.cpp
+    index/enterpriseblockindex.cpp
   )
   target_link_libraries(bitcoin_node PRIVATE libpqxx::pqxx)
   target_compile_definitions(bitcoin_node PRIVATE ENABLE_ENTERPRISE)
@@ -329,6 +332,9 @@ if(BUILD_DAEMON)
     bitcoin_node
     $<TARGET_NAME_IF_EXISTS:bitcoin_wallet>
   )
+  if(ENABLE_ENTERPRISE)
+    target_compile_definitions(bitcoind PRIVATE ENABLE_ENTERPRISE)
+  endif()
   install_binary_component(bitcoind HAS_MANPAGE)
 endif()
 if(ENABLE_IPC AND BUILD_DAEMON)
