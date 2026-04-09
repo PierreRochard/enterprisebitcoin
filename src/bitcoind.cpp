@@ -30,12 +30,32 @@
 #include <util/translation.h>
 
 #include <any>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <optional>
 
 using node::NodeContext;
 
 const TranslateFn G_TRANSLATION_FUN{nullptr};
+
+namespace {
+
+[[noreturn]] void DirectProcessExit(int exit_status)
+{
+    std::fflush(nullptr);
+    std::_Exit(exit_status);
+}
+
+int ReturnOrExit(int exit_status)
+{
+#ifdef ENABLE_ENTERPRISE
+    DirectProcessExit(exit_status);
+#endif
+    return exit_status;
+}
+
+} // namespace
 
 #if HAVE_DECL_FORK
 
@@ -80,13 +100,13 @@ int fork_daemon(bool nochdir, bool noclose, TokenPipeEnd& endpoint)
 
 #if HAVE_DECL_SETSID
     if (setsid() < 0) {
-        exit(1); // setsid failed.
+        std::_Exit(1); // setsid failed.
     }
 #endif
 
     if (!nochdir) {
         if (chdir("/") != 0) {
-            exit(1); // chdir failed.
+            std::_Exit(1); // chdir failed.
         }
     }
     if (!noclose) {
@@ -98,10 +118,10 @@ int fork_daemon(bool nochdir, bool noclose, TokenPipeEnd& endpoint)
             // Don't close if fd<=2 to try to handle the case where the program was invoked without any file descriptors open.
             if (fd > 2) close(fd);
             if (err) {
-                exit(1); // dup2 failed.
+                std::_Exit(1); // dup2 failed.
             }
         } else {
-            exit(1); // open /dev/null failed.
+            std::_Exit(1); // open /dev/null failed.
         }
     }
     endpoint.TokenWrite(0); // Success
@@ -223,10 +243,10 @@ static bool AppInit(NodeContext& node)
             default: { // Parent: wait and exit.
                 int token = daemon_ep.TokenRead();
                 if (token) { // Success
-                    exit(EXIT_SUCCESS);
+                    DirectProcessExit(EXIT_SUCCESS);
                 } else { // fRet = false or token read error (premature exit).
                     tfm::format(std::cerr, "Error during initialization - check %s for details\n", fs::PathToString(LogInstance().m_file_path.filename()));
-                    exit(EXIT_FAILURE);
+                    DirectProcessExit(EXIT_FAILURE);
                 }
             }
             }
@@ -264,7 +284,7 @@ MAIN_FUNCTION
     int exit_status;
     std::unique_ptr<interfaces::Init> init = interfaces::MakeNodeInit(node, argc, argv, exit_status);
     if (!init) {
-        return exit_status;
+        return ReturnOrExit(exit_status);
     }
 
     SetupEnvironment();
@@ -276,9 +296,9 @@ MAIN_FUNCTION
 
     // Interpret command line arguments
     ArgsManager& args = *Assert(node.args);
-    if (!ParseArgs(node, argc, argv)) return EXIT_FAILURE;
+    if (!ParseArgs(node, argc, argv)) return ReturnOrExit(EXIT_FAILURE);
     // Process early info return commands such as -help or -version
-    if (ProcessInitCommands(*init, args)) return EXIT_SUCCESS;
+    if (ProcessInitCommands(*init, args)) return ReturnOrExit(EXIT_SUCCESS);
 
     // Start application
     if (!AppInit(node) || !Assert(node.shutdown_signal)->wait()) {
@@ -287,5 +307,5 @@ MAIN_FUNCTION
     Interrupt(node);
     Shutdown(node);
 
-    return node.exit_status;
+    return ReturnOrExit(node.exit_status);
 }
