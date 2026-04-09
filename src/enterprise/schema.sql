@@ -86,6 +86,56 @@ CREATE TABLE blocks
     non_ordinals_count                               BIGINT,
     non_ordinals_size                                BIGINT,
     non_ordinals_vsize                               BIGINT,
-    non_ordinals_fees                                BIGINT
+    non_ordinals_fees                                BIGINT,
+
+    spent_age_blocks_sum                             BIGINT,
+    avg_spent_age_blocks                             DOUBLE PRECISION,
+    coinblocks_destroyed                             DOUBLE PRECISION,
+    coindays_destroyed                               DOUBLE PRECISION,
+
+    min_fee_rate                                     DOUBLE PRECISION,
+    median_fee_rate                                  DOUBLE PRECISION,
+    p90_fee_rate                                     DOUBLE PRECISION,
+    max_fee_rate                                     DOUBLE PRECISION,
+
+    inputs_total_witness_size                        BIGINT,
+    taproot_inputs_total_witness_size                BIGINT,
+    taproot_key_path_spend_count                     BIGINT,
+    taproot_script_path_spend_count                  BIGINT,
+    taproot_annex_spend_count                        BIGINT,
+    tapscript_spend_count                            BIGINT,
+
+    coinbase_script_sig_size                         BIGINT,
+    coinbase_witness_stack_items                     BIGINT,
+    coinbase_witness_size                            BIGINT,
+    coinbase_outputs_count                           BIGINT,
+    has_witness_commitment                           BOOLEAN,
+    witness_commitment_index                         BIGINT,
+    coinbase_tag                                     TEXT,
+
+    version_bits_top_bits_valid                      BOOLEAN,
+    version_bits_signalling                          JSONB,
+    unknown_version_bits                             JSONB
 );
 
+CREATE TABLE block_address_flows
+(
+    id                                               BIGSERIAL PRIMARY KEY,
+    network                                          TEXT NOT NULL,
+    block_hash                                       TEXT NOT NULL REFERENCES blocks(hash) ON DELETE CASCADE,
+    input_height                                     BIGINT,
+    input_median_time                                timestamp with time zone,
+    input_txid                                       TEXT,
+    input_wtxid                                      TEXT,
+    input_vector                                     BIGINT,
+    input_size                                       BIGINT,
+    output_height                                    BIGINT NOT NULL,
+    output_median_time                               timestamp with time zone,
+    output_txid                                      TEXT NOT NULL,
+    output_wtxid                                     TEXT,
+    output_vector                                    BIGINT NOT NULL,
+    output_size                                      BIGINT NOT NULL,
+    output_script_type                               BIGINT NOT NULL,
+    address                                          TEXT,
+    amount                                           BIGINT NOT NULL
+);

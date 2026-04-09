@@ -1,8 +1,7 @@
 #include <enterprise/schema_setup.h>
 
-#include <pqxx/pqxx>
-
 #include <array>
+#include <pqxx/pqxx>
 #include <string>
 #include <string_view>
 
@@ -17,6 +16,11 @@ struct SnapshotTableSpec {
     std::string_view fk_name;
 };
 
+struct BlockColumnSpec {
+    std::string_view name;
+    std::string_view type;
+};
+
 constexpr std::array<SnapshotTableSpec, 8> SNAPSHOT_TABLES{{
     {"utxo_age", "utxo_age_block_height_weeks_old_idx", "utxo_age_network_hash_weeks_old_idx", "network, block_hash, weeks_old", "utxo_age_block_height_idx", "utxo_age_snapshot_fk"},
     {"utxo_balances", "utxo_balances_block_height_balance_min_balance_max_idx", "utxo_balances_network_hash_bounds_idx", "network, block_hash, lower_bound, upper_bound", "utxo_balances_block_height_idx", "utxo_balances_snapshot_fk"},
@@ -26,6 +30,34 @@ constexpr std::array<SnapshotTableSpec, 8> SNAPSHOT_TABLES{{
     {"address_balance_buckets", "address_balance_buckets_block_height_bucket_idx", "address_balance_buckets_network_hash_bounds_idx", "network, block_hash, lower_bound, upper_bound", "address_balance_buckets_block_height_idx", "address_balance_buckets_snapshot_fk"},
     {"address_balance_buckets_usd", "address_balance_buckets_usd_block_height_bucket_idx", "address_balance_buckets_usd_network_hash_bounds_idx", "network, block_hash, lower_bound_cents, upper_bound_cents", "address_balance_buckets_usd_block_height_idx", "address_balance_buckets_usd_snapshot_fk"},
     {"utxo_script_types", "utxo_types_block_height_type_idx", "utxo_script_types_network_hash_type_idx", "network, block_hash, script_type", "utxo_script_types_block_height_idx", "utxo_script_types_snapshot_fk"},
+}};
+
+constexpr std::array<BlockColumnSpec, 25> BLOCK_COLUMNS{{
+    {"spent_age_blocks_sum", "BIGINT"},
+    {"avg_spent_age_blocks", "DOUBLE PRECISION"},
+    {"coinblocks_destroyed", "DOUBLE PRECISION"},
+    {"coindays_destroyed", "DOUBLE PRECISION"},
+    {"min_fee_rate", "DOUBLE PRECISION"},
+    {"median_fee_rate", "DOUBLE PRECISION"},
+    {"p90_fee_rate", "DOUBLE PRECISION"},
+    {"max_fee_rate", "DOUBLE PRECISION"},
+    {"inputs_total_witness_size", "BIGINT"},
+    {"taproot_inputs_total_witness_size", "BIGINT"},
+    {"taproot_key_path_spend_count", "BIGINT"},
+    {"taproot_script_path_spend_count", "BIGINT"},
+    {"taproot_annex_spend_count", "BIGINT"},
+    {"tapscript_spend_count", "BIGINT"},
+    {"coinbase_script_sig_size", "BIGINT"},
+    {"coinbase_witness_stack_items", "BIGINT"},
+    {"coinbase_witness_size", "BIGINT"},
+    {"coinbase_outputs_count", "BIGINT"},
+    {"has_witness_commitment", "BOOLEAN"},
+    {"witness_commitment_index", "BIGINT"},
+    {"coinbase_tag", "TEXT"},
+    {"version_bits_top_bits_valid", "BOOLEAN"},
+    {"version_bits_signalling", "JSONB"},
+    {"unknown_version_bits", "JSONB"},
+    {"network", "TEXT"},
 }};
 
 void Exec(pqxx::work& w, const std::string& sql)
@@ -44,14 +76,16 @@ void EnsureSnapshotForeignKey(pqxx::work& w, const SnapshotTableSpec& spec)
     Exec(w,
          "DO $$ "
          "BEGIN "
-         "    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '" + std::string(spec.fk_name) + "') THEN "
-         "        ALTER TABLE " + std::string(spec.table) +
-         "            ADD CONSTRAINT " + std::string(spec.fk_name) +
-         "            FOREIGN KEY (network, block_hash) "
-         "            REFERENCES utxo_snapshots(network, block_hash) "
-         "            ON DELETE CASCADE; "
-         "    END IF; "
-         "END $$");
+         "    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '" +
+             std::string(spec.fk_name) + "') THEN "
+                                         "        ALTER TABLE " +
+             std::string(spec.table) +
+             "            ADD CONSTRAINT " + std::string(spec.fk_name) +
+             "            FOREIGN KEY (network, block_hash) "
+             "            REFERENCES utxo_snapshots(network, block_hash) "
+             "            ON DELETE CASCADE; "
+             "    END IF; "
+             "END $$");
 }
 
 void EnsureSnapshotIndexes(pqxx::work& w, const SnapshotTableSpec& spec)
@@ -63,6 +97,13 @@ void EnsureSnapshotIndexes(pqxx::work& w, const SnapshotTableSpec& spec)
                 " ON " + std::string(spec.table) + " (block_height)");
 }
 
+void EnsureBlockColumns(pqxx::work& w)
+{
+    for (const auto& spec : BLOCK_COLUMNS) {
+        Exec(w, "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS " + std::string(spec.name) + " " + std::string(spec.type));
+    }
+}
+
 } // namespace
 
 namespace enterprise {
@@ -71,7 +112,7 @@ void EnsureBlockExportSchema(pqxx::connection& conn, std::string_view network)
 {
     const std::string network_name{network};
     pqxx::work w(conn);
-    Exec(w, "ALTER TABLE blocks ADD COLUMN IF NOT EXISTS network TEXT");
+    EnsureBlockColumns(w);
     w.exec(
         pqxx::zview{
             "UPDATE blocks "
@@ -82,6 +123,31 @@ void EnsureBlockExportSchema(pqxx::connection& conn, std::string_view network)
         pqxx::params{network_name});
     Exec(w, "CREATE INDEX IF NOT EXISTS blocks_network_height_idx ON blocks (network, height)");
     Exec(w, "CREATE INDEX IF NOT EXISTS blocks_network_prev_hash_idx ON blocks (network, hash_prev_block)");
+    Exec(w,
+         "CREATE TABLE IF NOT EXISTS block_address_flows ("
+         "    id BIGSERIAL PRIMARY KEY,"
+         "    network TEXT NOT NULL,"
+         "    block_hash TEXT NOT NULL REFERENCES blocks(hash) ON DELETE CASCADE,"
+         "    input_height BIGINT,"
+         "    input_median_time TIMESTAMPTZ,"
+         "    input_txid TEXT,"
+         "    input_wtxid TEXT,"
+         "    input_vector BIGINT,"
+         "    input_size BIGINT,"
+         "    output_height BIGINT NOT NULL,"
+         "    output_median_time TIMESTAMPTZ,"
+         "    output_txid TEXT NOT NULL,"
+         "    output_wtxid TEXT,"
+         "    output_vector BIGINT NOT NULL,"
+         "    output_size BIGINT NOT NULL,"
+         "    output_script_type BIGINT NOT NULL,"
+         "    address TEXT,"
+         "    amount BIGINT NOT NULL"
+         ")");
+    Exec(w, "CREATE INDEX IF NOT EXISTS block_address_flows_block_hash_idx ON block_address_flows (block_hash)");
+    Exec(w, "CREATE INDEX IF NOT EXISTS block_address_flows_network_address_idx ON block_address_flows (network, address)");
+    Exec(w, "CREATE INDEX IF NOT EXISTS block_address_flows_network_input_height_idx ON block_address_flows (network, input_height)");
+    Exec(w, "CREATE INDEX IF NOT EXISTS block_address_flows_network_output_height_idx ON block_address_flows (network, output_height)");
     w.commit();
 }
 
@@ -138,11 +204,11 @@ void EnsureUtxoSnapshotSchema(pqxx::connection& conn, std::string_view network)
     for (const auto& spec : SNAPSHOT_TABLES) {
         const std::string update_query =
             "UPDATE " + std::string(spec.table) + " t "
-            "SET network = s.network, block_hash = s.block_hash "
-            "FROM utxo_snapshots s "
-            "WHERE (t.network IS NULL OR t.block_hash IS NULL) "
-            "  AND t.block_height = s.block_height "
-            "  AND s.network = $1";
+                                                  "SET network = s.network, block_hash = s.block_hash "
+                                                  "FROM utxo_snapshots s "
+                                                  "WHERE (t.network IS NULL OR t.block_hash IS NULL) "
+                                                  "  AND t.block_height = s.block_height "
+                                                  "  AND s.network = $1";
         w.exec(update_query, pqxx::params{network_name});
     }
 

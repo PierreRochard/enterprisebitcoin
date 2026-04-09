@@ -31,6 +31,7 @@ struct TransactionData {
     unsigned int vsize;
 
     std::string transaction_hash;
+    std::string transaction_witness_hash;
     bool is_coinbase;
 
     TransactionData(std::size_t transaction_index, const CTransactionRef& transaction);
@@ -46,7 +47,8 @@ struct TransactionData {
     }
 };
 
-class BlockToSql {
+class BlockToSql
+{
 public:
     BlockToSql(const interfaces::BlockInfo& block_info, const CBlockIndex& block_index, script_verify_flags flags);
 };
