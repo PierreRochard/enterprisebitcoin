@@ -120,7 +120,6 @@ CREATE TABLE blocks
 
 CREATE TABLE block_address_flows
 (
-    id                                               BIGSERIAL PRIMARY KEY,
     network                                          TEXT NOT NULL,
     block_hash                                       TEXT NOT NULL REFERENCES blocks(hash) ON DELETE CASCADE,
     input_height                                     BIGINT,
@@ -138,4 +137,29 @@ CREATE TABLE block_address_flows
     output_script_type                               BIGINT NOT NULL,
     address                                          TEXT,
     amount                                           BIGINT NOT NULL
+);
+
+CREATE TABLE block_address_flow_export_queue
+(
+    network                                          TEXT NOT NULL,
+    block_hash                                       TEXT NOT NULL,
+    block_height                                     BIGINT NOT NULL,
+    queued_at                                        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_attempted_at                                TIMESTAMPTZ,
+    attempt_count                                    BIGINT NOT NULL DEFAULT 0,
+    last_error                                       TEXT,
+    PRIMARY KEY (network, block_hash)
+);
+
+CREATE INDEX block_address_flow_export_queue_network_height_idx
+    ON block_address_flow_export_queue (network, block_height);
+
+CREATE TABLE block_address_flow_exports
+(
+    network                                          TEXT NOT NULL,
+    block_hash                                       TEXT NOT NULL,
+    block_height                                     BIGINT NOT NULL,
+    exported_at                                      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (network, block_hash),
+    UNIQUE (network, block_height)
 );

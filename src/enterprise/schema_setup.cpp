@@ -125,7 +125,6 @@ void EnsureBlockExportSchema(pqxx::connection& conn, std::string_view network)
     Exec(w, "CREATE INDEX IF NOT EXISTS blocks_network_prev_hash_idx ON blocks (network, hash_prev_block)");
     Exec(w,
          "CREATE TABLE IF NOT EXISTS block_address_flows ("
-         "    id BIGSERIAL PRIMARY KEY,"
          "    network TEXT NOT NULL,"
          "    block_hash TEXT NOT NULL REFERENCES blocks(hash) ON DELETE CASCADE,"
          "    input_height BIGINT,"
@@ -144,10 +143,49 @@ void EnsureBlockExportSchema(pqxx::connection& conn, std::string_view network)
          "    address TEXT,"
          "    amount BIGINT NOT NULL"
          ")");
+    Exec(w,
+         "DO $$ "
+         "BEGIN "
+         "    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'block_address_flows_pkey') THEN "
+         "        ALTER TABLE block_address_flows DROP CONSTRAINT block_address_flows_pkey; "
+         "    END IF; "
+         "    IF EXISTS ("
+         "        SELECT 1 "
+         "        FROM information_schema.columns "
+         "        WHERE table_name = 'block_address_flows' "
+         "          AND column_name = 'id'"
+         "    ) THEN "
+         "        ALTER TABLE block_address_flows ALTER COLUMN id DROP DEFAULT; "
+         "        ALTER TABLE block_address_flows ALTER COLUMN id DROP NOT NULL; "
+         "    END IF; "
+         "END $$");
+    Exec(w, "DROP SEQUENCE IF EXISTS block_address_flows_id_seq");
     Exec(w, "CREATE INDEX IF NOT EXISTS block_address_flows_block_hash_idx ON block_address_flows (block_hash)");
-    Exec(w, "CREATE INDEX IF NOT EXISTS block_address_flows_network_address_idx ON block_address_flows (network, address)");
-    Exec(w, "CREATE INDEX IF NOT EXISTS block_address_flows_network_input_height_idx ON block_address_flows (network, input_height)");
-    Exec(w, "CREATE INDEX IF NOT EXISTS block_address_flows_network_output_height_idx ON block_address_flows (network, output_height)");
+    // Keep only the cleanup index during catchup; the large query-serving indexes
+    // can be rebuilt later once backfill is complete.
+    Exec(w,
+         "CREATE TABLE IF NOT EXISTS block_address_flow_export_queue ("
+         "    network TEXT NOT NULL,"
+         "    block_hash TEXT NOT NULL,"
+         "    block_height BIGINT NOT NULL,"
+         "    queued_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+         "    last_attempted_at TIMESTAMPTZ,"
+         "    attempt_count BIGINT NOT NULL DEFAULT 0,"
+         "    last_error TEXT,"
+         "    PRIMARY KEY (network, block_hash)"
+         ")");
+    Exec(w,
+         "CREATE INDEX IF NOT EXISTS block_address_flow_export_queue_network_height_idx "
+         "ON block_address_flow_export_queue (network, block_height)");
+    Exec(w,
+         "CREATE TABLE IF NOT EXISTS block_address_flow_exports ("
+         "    network TEXT NOT NULL,"
+         "    block_hash TEXT NOT NULL,"
+         "    block_height BIGINT NOT NULL,"
+         "    exported_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+         "    PRIMARY KEY (network, block_hash),"
+         "    UNIQUE (network, block_height)"
+         ")");
     w.commit();
 }
 
