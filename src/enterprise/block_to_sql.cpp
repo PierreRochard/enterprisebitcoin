@@ -11,6 +11,7 @@
 #include <enterprise/common.h>
 #include <enterprise/db.h>
 #include <enterprise/utilities.h>
+#include <interfaces/chain.h>
 #include <key_io.h>
 #include <logging.h>
 #include <node/transaction.h>
@@ -34,6 +35,7 @@
 #include <optional>
 #include <pqxx/pqxx>
 #include <span>
+#include <stdexcept>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -72,6 +74,8 @@ struct FeeRateSummary {
     double p90{0.0};
     double max{0.0};
 };
+
+constexpr int64_t BLOCK_ADDRESS_FLOW_REQUEUE_WINDOW{1000};
 
 struct VersionBitsExportData {
     bool top_bits_valid{false};
@@ -257,6 +261,85 @@ std::optional<std::string> GetMedianTimePastString(const CBlockIndex* block_inde
     }
 
     return FormatPgTimestamp(block_index->GetMedianTimePast());
+}
+
+struct QueuedBlockAddressFlowExport {
+    std::string block_hash;
+    int64_t block_height;
+};
+
+void DeleteQueuedBlockAddressFlowExport(pqxx::work& w, std::string_view network, std::string_view block_hash)
+{
+    w.exec(
+        pqxx::zview{"DELETE FROM block_address_flow_export_queue WHERE network = $1 AND block_hash = $2"},
+        pqxx::params{std::string(network), std::string(block_hash)});
+}
+
+void DeleteBlockAddressFlowExportMarker(pqxx::work& w, std::string_view network, std::string_view block_hash)
+{
+    w.exec(
+        pqxx::zview{"DELETE FROM block_address_flow_exports WHERE network = $1 AND block_hash = $2"},
+        pqxx::params{std::string(network), std::string(block_hash)});
+}
+
+void UpsertBlockAddressFlowExportMarker(pqxx::work& w, std::string_view network, std::string_view block_hash, int64_t block_height)
+{
+    w.exec(
+        pqxx::zview{
+            "INSERT INTO block_address_flow_exports(network, block_hash, block_height) "
+            "VALUES ($1, $2, $3) "
+            "ON CONFLICT (network, block_hash) DO UPDATE "
+            "SET block_height = EXCLUDED.block_height, exported_at = now()"},
+        pqxx::params{std::string(network), std::string(block_hash), block_height});
+}
+
+void RecordQueuedBlockAddressFlowFailure(pqxx::connection& conn, std::string_view network, std::string_view block_hash, std::string_view error)
+{
+    try {
+        pqxx::work w(conn);
+        w.exec(
+            pqxx::zview{
+                "UPDATE block_address_flow_export_queue "
+                "SET last_attempted_at = now(), attempt_count = attempt_count + 1, last_error = $3 "
+                "WHERE network = $1 AND block_hash = $2"},
+            pqxx::params{std::string(network), std::string(block_hash), std::string(error)});
+        w.commit();
+    } catch (const std::exception& update_error) {
+        LogWarning("BlockAddressFlows: failed to record queued export failure for %s: %s",
+                   std::string(block_hash).c_str(), update_error.what());
+    }
+}
+
+std::optional<QueuedBlockAddressFlowExport> ClaimNextQueuedBlockAddressFlowExport(pqxx::connection& conn, std::string_view network)
+{
+    pqxx::work w(conn);
+    const auto result = w.exec(
+        pqxx::zview{
+            "WITH next_job AS ("
+            "    SELECT ctid, block_hash, block_height "
+            "    FROM block_address_flow_export_queue "
+            "    WHERE network = $1 "
+            "      AND (last_attempted_at IS NULL OR last_attempted_at < now() - interval '30 seconds') "
+            "    ORDER BY block_height "
+            "    FOR UPDATE SKIP LOCKED "
+            "    LIMIT 1"
+            ") "
+            "UPDATE block_address_flow_export_queue q "
+            "SET last_attempted_at = now() "
+            "FROM next_job "
+            "WHERE q.ctid = next_job.ctid "
+            "RETURNING next_job.block_hash, next_job.block_height"},
+        pqxx::params{std::string(network)});
+    w.commit();
+
+    if (result.empty()) {
+        return std::nullopt;
+    }
+
+    return QueuedBlockAddressFlowExport{
+        result[0][0].as<std::string>(),
+        result[0][1].as<int64_t>(),
+    };
 }
 
 std::string JsonEscape(std::string_view input)
@@ -477,7 +560,7 @@ VersionBitsExportData BuildVersionBitsExportData(int32_t version)
     return export_data;
 }
 
-void WriteBlockRow(pqxx::connection& conn, const BlockInsertData& data, const std::vector<AddressFlowRow>& address_flows)
+void WriteBlockRow(pqxx::connection& conn, const BlockInsertData& data)
 {
     pqxx::work w(conn);
     w.exec(pqxx::zview{"DELETE FROM blocks WHERE hash = $1"}, pqxx::params{data.hash});
@@ -584,6 +667,131 @@ void WriteBlockRow(pqxx::connection& conn, const BlockInsertData& data, const st
     AppendInsertField(columns, values, params, placeholders, first, "unknown_version_bits", data.unknown_version_bits);
 
     w.exec("INSERT INTO blocks (" + columns.str() + ") VALUES (" + values.str() + ")", params);
+    w.exec(
+        pqxx::zview{
+            "INSERT INTO block_address_flow_export_queue(network, block_hash, block_height) "
+            "VALUES ($1, $2, $3) "
+            "ON CONFLICT (network, block_hash) DO UPDATE "
+            "SET block_height = EXCLUDED.block_height, queued_at = now(), "
+            "    last_attempted_at = NULL, attempt_count = 0, last_error = NULL"},
+        pqxx::params{data.network, data.hash, data.height});
+
+    w.commit();
+}
+
+std::vector<AddressFlowRow> BuildAddressFlowRows(const interfaces::BlockInfo& block_info, const CBlockIndex& block_index, std::string_view network)
+{
+    assert(block_info.data != nullptr);
+    const CBlock& block = *block_info.data;
+    const std::string block_hash = block.GetHash().GetHex();
+    const int64_t block_median_time = block_index.GetMedianTimePast();
+    const std::string block_median_time_text = FormatPgTimestamp(block_median_time);
+
+    std::unordered_map<std::string, std::string> block_wtxids;
+    block_wtxids.reserve(block.vtx.size());
+    size_t address_flow_reserve = 0;
+    for (const CTransactionRef& transaction : block.vtx) {
+        block_wtxids.emplace(transaction->GetHash().GetHex(), transaction->GetWitnessHash().GetHex());
+        address_flow_reserve += transaction->vout.size();
+        if (!transaction->IsCoinBase()) {
+            address_flow_reserve += transaction->vin.size();
+        }
+    }
+
+    std::vector<AddressFlowRow> address_flows;
+    address_flows.reserve(address_flow_reserve);
+
+    for (std::size_t transaction_index = 0; transaction_index < block.vtx.size(); ++transaction_index) {
+        const CTransactionRef& transaction = block.vtx[transaction_index];
+        TransactionData transaction_data{transaction_index, transaction};
+
+        for (std::size_t input_vector = 0; input_vector < transaction->vin.size(); ++input_vector) {
+            if (transaction_data.is_coinbase) {
+                continue;
+            }
+
+            assert(block_info.undo_data != nullptr);
+            const CTxIn& txin_data = transaction->vin[input_vector];
+            const Coin& coin = block_info.undo_data->vtxundo.at(transaction_index - 1).vprevout.at(input_vector);
+            const CTxOut& spent_output_data = coin.out;
+
+            std::vector<std::vector<unsigned char>> solutions_data;
+            const TxoutType which_type = Solver(spent_output_data.scriptPubKey, solutions_data);
+            const unsigned int spent_script_type = GetTxnOutputTypeEnum(which_type);
+            const int64_t spent_output_size = GetSerializeSize(spent_output_data);
+            const int64_t input_size =
+                GetSerializeSize(txin_data) + GetSerializeSize(txin_data.scriptWitness.stack);
+
+            const std::optional<std::string> address_string = ExtractAddressString(spent_output_data.scriptPubKey);
+            const std::string prev_txid = txin_data.prevout.hash.GetHex();
+            std::optional<std::string> prev_wtxid;
+            if (const auto same_block = block_wtxids.find(prev_txid); same_block != block_wtxids.end()) {
+                prev_wtxid = same_block->second;
+            }
+
+            const CBlockIndex* spent_output_index = block_index.GetAncestor(coin.nHeight);
+            address_flows.push_back(AddressFlowRow{
+                std::string(network),
+                block_hash,
+                static_cast<int64_t>(block_index.nHeight),
+                block_median_time_text,
+                transaction_data.transaction_hash,
+                transaction_data.transaction_witness_hash,
+                static_cast<int64_t>(input_vector),
+                input_size,
+                static_cast<int64_t>(coin.nHeight),
+                GetMedianTimePastString(spent_output_index),
+                prev_txid,
+                prev_wtxid,
+                static_cast<int64_t>(txin_data.prevout.n),
+                spent_output_size,
+                static_cast<int64_t>(spent_script_type),
+                address_string,
+                -spent_output_data.nValue});
+        }
+
+        for (std::size_t output_vector = 0; output_vector < transaction->vout.size(); ++output_vector) {
+            const CTxOut& txout_data = transaction->vout[output_vector];
+            std::vector<std::vector<unsigned char>> solutions_data;
+            const TxoutType which_type = Solver(txout_data.scriptPubKey, solutions_data);
+            const unsigned int script_type = GetTxnOutputTypeEnum(which_type);
+            const int64_t output_size = GetSerializeSize(txout_data);
+
+            address_flows.push_back(AddressFlowRow{
+                std::string(network),
+                block_hash,
+                std::nullopt,
+                std::nullopt,
+                std::nullopt,
+                std::nullopt,
+                std::nullopt,
+                std::nullopt,
+                static_cast<int64_t>(block_index.nHeight),
+                block_median_time_text,
+                transaction_data.transaction_hash,
+                transaction_data.transaction_witness_hash,
+                static_cast<int64_t>(output_vector),
+                output_size,
+                static_cast<int64_t>(script_type),
+                ExtractAddressString(txout_data.scriptPubKey),
+                txout_data.nValue});
+        }
+    }
+
+    return address_flows;
+}
+
+void WriteQueuedBlockAddressFlowRows(pqxx::connection& conn,
+                                     std::string_view network,
+                                     std::string_view block_hash,
+                                     int64_t block_height,
+                                     const std::vector<AddressFlowRow>& address_flows)
+{
+    pqxx::work w(conn);
+    w.exec("SET LOCAL synchronous_commit = off");
+    w.exec(
+        pqxx::zview{"DELETE FROM block_address_flows WHERE network = $1 AND block_hash = $2"},
+        pqxx::params{std::string(network), std::string(block_hash)});
 
     if (!address_flows.empty()) {
         auto stream = pqxx::stream_to::table(
@@ -614,15 +822,150 @@ void WriteBlockRow(pqxx::connection& conn, const BlockInsertData& data, const st
         stream.complete();
     }
 
+    UpsertBlockAddressFlowExportMarker(w, network, block_hash, block_height);
+    DeleteQueuedBlockAddressFlowExport(w, network, block_hash);
     w.commit();
 }
 
 } // namespace
 
+void RewindBlockExportToHeight(std::string_view network, int height)
+{
+    auto& conn = enterprise::PgConnection();
+    pqxx::work w(conn);
+    w.exec(
+        pqxx::zview{
+            "DELETE FROM block_address_flows f "
+            "USING blocks b "
+            "WHERE f.block_hash = b.hash "
+            "  AND b.network = $1 "
+            "  AND b.height > $2"},
+        pqxx::params{std::string(network), height});
+    w.exec(
+        pqxx::zview{"DELETE FROM block_address_flow_export_queue WHERE network = $1 AND block_height > $2"},
+        pqxx::params{std::string(network), height});
+    w.exec(
+        pqxx::zview{"DELETE FROM block_address_flow_exports WHERE network = $1 AND block_height > $2"},
+        pqxx::params{std::string(network), height});
+    w.exec(
+        pqxx::zview{"DELETE FROM blocks WHERE network = $1 AND height > $2"},
+        pqxx::params{std::string(network), height});
+    const auto frontier_result = w.exec(
+        pqxx::zview{
+            "SELECT COALESCE(MIN(block_height), $2) "
+            "FROM block_address_flow_export_queue "
+            "WHERE network = $1"},
+        pqxx::params{std::string(network), height});
+    const int64_t frontier_height = frontier_result[0][0].as<int64_t>();
+    const int64_t requeue_floor = std::max<int64_t>(frontier_height - BLOCK_ADDRESS_FLOW_REQUEUE_WINDOW, 0);
+    const int64_t requeue_ceiling = std::min<int64_t>(frontier_height + BLOCK_ADDRESS_FLOW_REQUEUE_WINDOW, height);
+    w.exec(
+        pqxx::zview{
+            "INSERT INTO block_address_flow_exports(network, block_hash, block_height) "
+            "SELECT b.network, b.hash, b.height "
+            "FROM blocks b "
+            "LEFT JOIN block_address_flow_export_queue q "
+            "       ON q.network = b.network AND q.block_hash = b.hash "
+            "LEFT JOIN block_address_flow_exports e "
+            "       ON e.network = b.network AND e.block_hash = b.hash "
+            "WHERE b.network = $1 "
+            "  AND b.height >= $2 "
+            "  AND b.height <= $3 "
+            "  AND q.block_hash IS NULL "
+            "  AND e.block_hash IS NULL "
+            "ON CONFLICT (network, block_hash) DO NOTHING"},
+        pqxx::params{std::string(network), requeue_floor, frontier_height});
+    w.exec(
+        pqxx::zview{
+            "INSERT INTO block_address_flow_export_queue(network, block_hash, block_height) "
+            "SELECT b.network, b.hash, b.height "
+            "FROM blocks b "
+            "LEFT JOIN block_address_flow_export_queue q "
+            "       ON q.network = b.network AND q.block_hash = b.hash "
+            "LEFT JOIN block_address_flow_exports e "
+            "       ON e.network = b.network AND e.block_hash = b.hash "
+            "WHERE b.network = $1 "
+            "  AND b.height >= $2 "
+            "  AND b.height <= $3 "
+            "  AND q.block_hash IS NULL "
+            "  AND e.block_hash IS NULL "
+            "ON CONFLICT (network, block_hash) DO NOTHING"},
+        pqxx::params{std::string(network), requeue_floor, requeue_ceiling});
+    w.commit();
+}
+
+bool ProcessNextQueuedBlockAddressFlowExport(interfaces::Chain& chain, Chainstate& chainstate, std::string_view network)
+{
+    auto& conn = enterprise::PgConnection();
+    const auto next_job = ClaimNextQueuedBlockAddressFlowExport(conn, network);
+    if (!next_job) {
+        return false;
+    }
+
+    const auto queued_hash = uint256::FromHex(next_job->block_hash);
+    if (!queued_hash) {
+        pqxx::work w(conn);
+        DeleteQueuedBlockAddressFlowExport(w, network, next_job->block_hash);
+        w.commit();
+        LogWarning("BlockAddressFlows: dropped invalid queued hash %s", next_job->block_hash.c_str());
+        return true;
+    }
+
+    bool in_active_chain{false};
+    int active_height{-1};
+    const bool found = chain.findBlock(*queued_hash, interfaces::FoundBlock().height(active_height).inActiveChain(in_active_chain));
+    if (!found || !in_active_chain || active_height != next_job->block_height) {
+        pqxx::work w(conn);
+        DeleteQueuedBlockAddressFlowExport(w, network, next_job->block_hash);
+        w.commit();
+        return true;
+    }
+
+    const CBlockIndex* block_index;
+    {
+        LOCK(cs_main);
+        block_index = chainstate.m_blockman.LookupBlockIndex(*queued_hash);
+    }
+    if (block_index == nullptr) {
+        pqxx::work w(conn);
+        DeleteQueuedBlockAddressFlowExport(w, network, next_job->block_hash);
+        w.commit();
+        LogWarning("BlockAddressFlows: missing block index entry for queued block %s", next_job->block_hash.c_str());
+        return true;
+    }
+
+    try {
+        CBlock block;
+        if (!chainstate.m_blockman.ReadBlock(block, *block_index)) {
+            throw std::runtime_error("Failed to read block from disk: " + next_job->block_hash);
+        }
+
+        CBlockUndo block_undo;
+        interfaces::BlockInfo block_info = kernel::MakeBlockInfo(block_index, &block);
+        if (block_index->nHeight > 0) {
+            if (!chainstate.m_blockman.ReadBlockUndo(block_undo, *block_index)) {
+                throw std::runtime_error("Failed to read undo data for block: " + next_job->block_hash);
+            }
+            block_info.undo_data = &block_undo;
+        }
+
+        const auto address_flows = BuildAddressFlowRows(block_info, *block_index, network);
+        WriteQueuedBlockAddressFlowRows(conn, network, next_job->block_hash, next_job->block_height, address_flows);
+        return true;
+    } catch (const std::exception& e) {
+        RecordQueuedBlockAddressFlowFailure(conn, network, next_job->block_hash, e.what());
+        LogWarning("BlockAddressFlows: queued export failed for %s: %s",
+                   next_job->block_hash.c_str(), e.what());
+        return true;
+    }
+}
+
 void RemoveBlockFromSql(std::string_view network, const uint256& block_hash)
 {
     auto& conn = enterprise::PgConnection();
     pqxx::work w(conn);
+    DeleteQueuedBlockAddressFlowExport(w, network, block_hash.GetHex());
+    DeleteBlockAddressFlowExportMarker(w, network, block_hash.GetHex());
     w.exec(pqxx::zview{"DELETE FROM blocks WHERE network = $1 AND hash = $2"},
            pqxx::params{std::string(network), block_hash.GetHex()});
     w.commit();
@@ -636,26 +979,11 @@ BlockToSql::BlockToSql(const interfaces::BlockInfo& block_info, const CBlockInde
     const std::string network = enterprise::ChainName();
     const std::string block_hash = block.GetHash().GetHex();
     const int64_t block_median_time = block_index.GetMedianTimePast();
-    const std::string block_median_time_text = FormatPgTimestamp(block_median_time);
     const CTransaction& coinbase_tx = *block.vtx.front();
 
     std::map<CAmount, unsigned int> fee_rates;
     std::vector<std::pair<double, uint64_t>> fee_rate_samples;
     fee_rate_samples.reserve(block.vtx.size() > 0 ? block.vtx.size() - 1 : 0);
-
-    std::unordered_map<std::string, std::string> block_wtxids;
-    block_wtxids.reserve(block.vtx.size());
-    size_t address_flow_reserve = 0;
-    for (const CTransactionRef& transaction : block.vtx) {
-        block_wtxids.emplace(transaction->GetHash().GetHex(), transaction->GetWitnessHash().GetHex());
-        address_flow_reserve += transaction->vout.size();
-        if (!transaction->IsCoinBase()) {
-            address_flow_reserve += transaction->vin.size();
-        }
-    }
-
-    std::vector<AddressFlowRow> address_flows;
-    address_flows.reserve(address_flow_reserve);
 
     std::map<unsigned int, std::array<uint64_t, 4>> output_script_types;
     std::map<unsigned int, std::array<uint64_t, 7>> input_script_types;
@@ -888,31 +1216,6 @@ BlockToSql::BlockToSql(const interfaces::BlockInfo& block_info, const CBlockInde
                 }
             }
 
-            const std::optional<std::string> address_string = ExtractAddressString(spent_output_data.scriptPubKey);
-            const std::string prev_txid = txin_data.prevout.hash.GetHex();
-            std::optional<std::string> prev_wtxid;
-            if (const auto same_block = block_wtxids.find(prev_txid); same_block != block_wtxids.end()) {
-                prev_wtxid = same_block->second;
-            }
-
-            address_flows.push_back(AddressFlowRow{
-                network,
-                block_hash,
-                static_cast<int64_t>(block_index.nHeight),
-                block_median_time_text,
-                transaction_data.transaction_hash,
-                transaction_data.transaction_witness_hash,
-                static_cast<int64_t>(input_vector),
-                input_size,
-                static_cast<int64_t>(coin.nHeight),
-                GetMedianTimePastString(spent_output_index),
-                prev_txid,
-                prev_wtxid,
-                static_cast<int64_t>(txin_data.prevout.n),
-                spent_output_size,
-                static_cast<int64_t>(spent_script_type),
-                address_string,
-                -spent_output_data.nValue});
         }
 
         for (std::size_t output_vector = 0; output_vector < transaction->vout.size(); ++output_vector) {
@@ -987,24 +1290,6 @@ BlockToSql::BlockToSql(const interfaces::BlockInfo& block_info, const CBlockInde
                 output_data_string_stream << ",";
             }
 
-            address_flows.push_back(AddressFlowRow{
-                network,
-                block_hash,
-                std::nullopt,
-                std::nullopt,
-                std::nullopt,
-                std::nullopt,
-                std::nullopt,
-                std::nullopt,
-                static_cast<int64_t>(block_index.nHeight),
-                block_median_time_text,
-                transaction_data.transaction_hash,
-                transaction_data.transaction_witness_hash,
-                static_cast<int64_t>(output_vector),
-                output_size,
-                static_cast<int64_t>(script_type),
-                ExtractAddressString(txout_data.scriptPubKey),
-                txout_data.nValue});
         }
 
         outputs_count += transaction_data.m_transaction->vout.size();
@@ -1209,7 +1494,7 @@ BlockToSql::BlockToSql(const interfaces::BlockInfo& block_info, const CBlockInde
         version_bits.unknown_bits_json};
 
     auto& conn = enterprise::PgConnection();
-    WriteBlockRow(conn, data, address_flows);
+    WriteBlockRow(conn, data);
 }
 
 TransactionData::TransactionData(std::size_t transaction_index, const CTransactionRef& transaction)

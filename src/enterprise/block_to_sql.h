@@ -11,6 +11,11 @@
 #include <string_view>
 
 class CBlockIndex;
+class Chainstate;
+
+namespace interfaces {
+class Chain;
+}
 
 struct FeeData {
     unsigned int fee;
@@ -53,6 +58,8 @@ public:
     BlockToSql(const interfaces::BlockInfo& block_info, const CBlockIndex& block_index, script_verify_flags flags);
 };
 
+void RewindBlockExportToHeight(std::string_view network, int height);
+bool ProcessNextQueuedBlockAddressFlowExport(interfaces::Chain& chain, Chainstate& chainstate, std::string_view network);
 void RemoveBlockFromSql(std::string_view network, const uint256& block_hash);
 
 #endif // BLOCK_TO_SQL_H
