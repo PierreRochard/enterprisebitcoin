@@ -118,27 +118,6 @@ CREATE TABLE blocks
     unknown_version_bits                             JSONB
 );
 
-CREATE TABLE block_address_flows
-(
-    network                                          TEXT NOT NULL,
-    block_hash                                       TEXT NOT NULL REFERENCES blocks(hash) ON DELETE CASCADE,
-    input_height                                     BIGINT,
-    input_median_time                                timestamp with time zone,
-    input_txid                                       TEXT,
-    input_wtxid                                      TEXT,
-    input_vector                                     BIGINT,
-    input_size                                       BIGINT,
-    output_height                                    BIGINT NOT NULL,
-    output_median_time                               timestamp with time zone,
-    output_txid                                      TEXT NOT NULL,
-    output_wtxid                                     TEXT,
-    output_vector                                    BIGINT NOT NULL,
-    output_size                                      BIGINT NOT NULL,
-    output_script_type                               BIGINT NOT NULL,
-    address                                          TEXT,
-    amount                                           BIGINT NOT NULL
-);
-
 CREATE TABLE block_address_flow_export_queue
 (
     network                                          TEXT NOT NULL,
@@ -162,4 +141,39 @@ CREATE TABLE block_address_flow_exports
     exported_at                                      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (network, block_hash),
     UNIQUE (network, block_height)
+);
+
+CREATE TABLE address_flow_block_summaries
+(
+    network                                          TEXT NOT NULL,
+    block_hash                                       TEXT NOT NULL,
+    block_height                                     BIGINT NOT NULL,
+    day                                              DATE NOT NULL,
+    median_time                                      TIMESTAMPTZ NOT NULL,
+    received_sats                                    BIGINT NOT NULL,
+    spent_sats                                       BIGINT NOT NULL,
+    net_sats                                         BIGINT NOT NULL,
+    tx_count                                         BIGINT NOT NULL,
+    exported_at                                      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (network, block_hash),
+    UNIQUE (network, block_height)
+);
+
+CREATE INDEX address_flow_block_summaries_network_day_height_idx
+    ON address_flow_block_summaries (network, day, block_height);
+
+CREATE TABLE address_flow_daily
+(
+    network                                          TEXT NOT NULL,
+    day                                              DATE NOT NULL,
+    received_sats                                    BIGINT NOT NULL,
+    spent_sats                                       BIGINT NOT NULL,
+    net_sats                                         BIGINT NOT NULL,
+    block_count                                      BIGINT NOT NULL,
+    tx_count                                         BIGINT NOT NULL,
+    last_block_height                                BIGINT NOT NULL,
+    last_block_hash                                  TEXT NOT NULL,
+    median_time                                      TIMESTAMPTZ NOT NULL,
+    updated_at                                       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (network, day)
 );

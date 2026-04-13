@@ -268,6 +268,132 @@ struct QueuedBlockAddressFlowExport {
     int64_t block_height;
 };
 
+struct AddressFlowBlockSummary {
+    std::string day;
+    std::string median_time;
+    int64_t received_sats{0};
+    int64_t spent_sats{0};
+    int64_t tx_count{0};
+};
+
+AddressFlowBlockSummary SummarizeAddressFlows(const CBlockIndex& block_index,
+                                             const CBlock& block,
+                                             const std::vector<AddressFlowRow>& address_flows)
+{
+    AddressFlowBlockSummary summary;
+    summary.median_time = FormatPgTimestamp(block_index.GetMedianTimePast());
+    summary.day = summary.median_time.substr(0, 10);
+    summary.tx_count = static_cast<int64_t>(block.vtx.size());
+
+    for (const auto& row : address_flows) {
+        if (!row.address.has_value()) {
+            continue;
+        }
+
+        if (row.amount >= 0) {
+            summary.received_sats += row.amount;
+        } else {
+            summary.spent_sats += -row.amount;
+        }
+    }
+
+    return summary;
+}
+
+void RebuildAddressFlowDaily(pqxx::work& w, std::string_view network)
+{
+    w.exec(
+        pqxx::zview{"DELETE FROM address_flow_daily WHERE network = $1"},
+        pqxx::params{std::string(network)});
+    w.exec(
+        pqxx::zview{
+            "WITH daily AS ("
+            "    SELECT network, day, "
+            "           SUM(received_sats) AS received_sats, "
+            "           SUM(spent_sats) AS spent_sats, "
+            "           SUM(net_sats) AS net_sats, "
+            "           COUNT(*) AS block_count, "
+            "           SUM(tx_count) AS tx_count "
+            "    FROM address_flow_block_summaries "
+            "    WHERE network = $1 "
+            "    GROUP BY network, day"
+            "), latest AS ("
+            "    SELECT DISTINCT ON (network, day) "
+            "           network, day, block_height, block_hash, median_time "
+            "    FROM address_flow_block_summaries "
+            "    WHERE network = $1 "
+            "    ORDER BY network, day, block_height DESC"
+            ") "
+            "INSERT INTO address_flow_daily("
+            "    network, day, received_sats, spent_sats, net_sats, block_count, tx_count, "
+            "    last_block_height, last_block_hash, median_time"
+            ") "
+            "SELECT daily.network, daily.day, daily.received_sats, daily.spent_sats, daily.net_sats, "
+            "       daily.block_count, daily.tx_count, latest.block_height, latest.block_hash, latest.median_time "
+            "FROM daily "
+            "JOIN latest USING (network, day)"},
+        pqxx::params{std::string(network)});
+}
+
+void RemoveAddressFlowBlockSummary(pqxx::work& w, std::string_view network, std::string_view block_hash)
+{
+    const auto result = w.exec(
+        pqxx::zview{
+            "SELECT day, received_sats, spent_sats, net_sats, tx_count "
+            "FROM address_flow_block_summaries "
+            "WHERE network = $1 AND block_hash = $2"},
+        pqxx::params{std::string(network), std::string(block_hash)});
+
+    if (result.empty()) {
+        return;
+    }
+
+    const std::string day = result[0][0].as<std::string>();
+    const int64_t received_sats = result[0][1].as<int64_t>();
+    const int64_t spent_sats = result[0][2].as<int64_t>();
+    const int64_t net_sats = result[0][3].as<int64_t>();
+    const int64_t tx_count = result[0][4].as<int64_t>();
+
+    w.exec(
+        pqxx::zview{
+            "UPDATE address_flow_daily "
+            "SET received_sats = received_sats - $3, "
+            "    spent_sats = spent_sats - $4, "
+            "    net_sats = net_sats - $5, "
+            "    block_count = block_count - 1, "
+            "    tx_count = tx_count - $6, "
+            "    updated_at = now() "
+            "WHERE network = $1 AND day = $2"},
+        pqxx::params{std::string(network), day, received_sats, spent_sats, net_sats, tx_count});
+    w.exec(
+        pqxx::zview{
+            "DELETE FROM address_flow_block_summaries "
+            "WHERE network = $1 AND block_hash = $2"},
+        pqxx::params{std::string(network), std::string(block_hash)});
+    w.exec(
+        pqxx::zview{
+            "DELETE FROM address_flow_daily "
+            "WHERE network = $1 AND day = $2 AND block_count <= 0"},
+        pqxx::params{std::string(network), day});
+    w.exec(
+        pqxx::zview{
+            "WITH latest AS ("
+            "    SELECT block_height, block_hash, median_time "
+            "    FROM address_flow_block_summaries "
+            "    WHERE network = $1 AND day = $2 "
+            "    ORDER BY block_height DESC "
+            "    LIMIT 1"
+            ") "
+            "UPDATE address_flow_daily d "
+            "SET last_block_height = latest.block_height, "
+            "    last_block_hash = latest.block_hash, "
+            "    median_time = latest.median_time, "
+            "    updated_at = now() "
+            "FROM latest "
+            "WHERE d.network = $1 AND d.day = $2"},
+        pqxx::params{std::string(network), day});
+}
+
 void DeleteQueuedBlockAddressFlowExport(pqxx::work& w, std::string_view network, std::string_view block_hash)
 {
     w.exec(
@@ -785,42 +911,68 @@ void WriteQueuedBlockAddressFlowRows(pqxx::connection& conn,
                                      std::string_view network,
                                      std::string_view block_hash,
                                      int64_t block_height,
-                                     const std::vector<AddressFlowRow>& address_flows)
+                                     const AddressFlowBlockSummary& summary)
 {
     pqxx::work w(conn);
     w.exec("SET LOCAL synchronous_commit = off");
+    RemoveAddressFlowBlockSummary(w, network, block_hash);
     w.exec(
-        pqxx::zview{"DELETE FROM block_address_flows WHERE network = $1 AND block_hash = $2"},
-        pqxx::params{std::string(network), std::string(block_hash)});
-
-    if (!address_flows.empty()) {
-        auto stream = pqxx::stream_to::table(
-            w,
-            {"block_address_flows"},
-            {"network", "block_hash", "input_height", "input_median_time", "input_txid", "input_wtxid",
-             "input_vector", "input_size", "output_height", "output_median_time", "output_txid",
-             "output_wtxid", "output_vector", "output_size", "output_script_type", "address", "amount"});
-        for (const auto& row : address_flows) {
-            stream.write_values(row.network,
-                                row.block_hash,
-                                row.input_height,
-                                row.input_median_time,
-                                row.input_txid,
-                                row.input_wtxid,
-                                row.input_vector,
-                                row.input_size,
-                                row.output_height,
-                                row.output_median_time,
-                                row.output_txid,
-                                row.output_wtxid,
-                                row.output_vector,
-                                row.output_size,
-                                row.output_script_type,
-                                row.address,
-                                row.amount);
-        }
-        stream.complete();
-    }
+        pqxx::zview{
+            "INSERT INTO address_flow_block_summaries("
+            "    network, block_hash, block_height, day, median_time, "
+            "    received_sats, spent_sats, net_sats, tx_count"
+            ") "
+            "VALUES ($1, $2, $3, $4::date, $5, $6, $7, $8, $9) "
+            "ON CONFLICT (network, block_hash) DO UPDATE "
+            "SET block_height = EXCLUDED.block_height, "
+            "    day = EXCLUDED.day, "
+            "    median_time = EXCLUDED.median_time, "
+            "    received_sats = EXCLUDED.received_sats, "
+            "    spent_sats = EXCLUDED.spent_sats, "
+            "    net_sats = EXCLUDED.net_sats, "
+            "    tx_count = EXCLUDED.tx_count, "
+            "    exported_at = now()"},
+        pqxx::params{std::string(network),
+                     std::string(block_hash),
+                     block_height,
+                     summary.day,
+                     summary.median_time,
+                     summary.received_sats,
+                     summary.spent_sats,
+                     summary.received_sats - summary.spent_sats,
+                     summary.tx_count});
+    w.exec(
+        pqxx::zview{
+            "INSERT INTO address_flow_daily("
+            "    network, day, received_sats, spent_sats, net_sats, block_count, tx_count, "
+            "    last_block_height, last_block_hash, median_time"
+            ") "
+            "VALUES ($1, $2::date, $3, $4, $5, 1, $6, $7, $8, $9) "
+            "ON CONFLICT (network, day) DO UPDATE "
+            "SET received_sats = address_flow_daily.received_sats + EXCLUDED.received_sats, "
+            "    spent_sats = address_flow_daily.spent_sats + EXCLUDED.spent_sats, "
+            "    net_sats = address_flow_daily.net_sats + EXCLUDED.net_sats, "
+            "    block_count = address_flow_daily.block_count + 1, "
+            "    tx_count = address_flow_daily.tx_count + EXCLUDED.tx_count, "
+            "    last_block_height = GREATEST(address_flow_daily.last_block_height, EXCLUDED.last_block_height), "
+            "    last_block_hash = CASE "
+            "        WHEN EXCLUDED.last_block_height >= address_flow_daily.last_block_height THEN EXCLUDED.last_block_hash "
+            "        ELSE address_flow_daily.last_block_hash "
+            "    END, "
+            "    median_time = CASE "
+            "        WHEN EXCLUDED.last_block_height >= address_flow_daily.last_block_height THEN EXCLUDED.median_time "
+            "        ELSE address_flow_daily.median_time "
+            "    END, "
+            "    updated_at = now()"},
+        pqxx::params{std::string(network),
+                     summary.day,
+                     summary.received_sats,
+                     summary.spent_sats,
+                     summary.received_sats - summary.spent_sats,
+                     summary.tx_count,
+                     block_height,
+                     std::string(block_hash),
+                     summary.median_time});
 
     UpsertBlockAddressFlowExportMarker(w, network, block_hash, block_height);
     DeleteQueuedBlockAddressFlowExport(w, network, block_hash);
@@ -835,12 +987,10 @@ void RewindBlockExportToHeight(std::string_view network, int height)
     pqxx::work w(conn);
     w.exec(
         pqxx::zview{
-            "DELETE FROM block_address_flows f "
-            "USING blocks b "
-            "WHERE f.block_hash = b.hash "
-            "  AND b.network = $1 "
-            "  AND b.height > $2"},
+            "DELETE FROM address_flow_block_summaries "
+            "WHERE network = $1 AND block_height > $2"},
         pqxx::params{std::string(network), height});
+    RebuildAddressFlowDaily(w, network);
     w.exec(
         pqxx::zview{"DELETE FROM block_address_flow_export_queue WHERE network = $1 AND block_height > $2"},
         pqxx::params{std::string(network), height});
@@ -950,7 +1100,8 @@ bool ProcessNextQueuedBlockAddressFlowExport(interfaces::Chain& chain, Chainstat
         }
 
         const auto address_flows = BuildAddressFlowRows(block_info, *block_index, network);
-        WriteQueuedBlockAddressFlowRows(conn, network, next_job->block_hash, next_job->block_height, address_flows);
+        const auto summary = SummarizeAddressFlows(*block_index, block, address_flows);
+        WriteQueuedBlockAddressFlowRows(conn, network, next_job->block_hash, next_job->block_height, summary);
         return true;
     } catch (const std::exception& e) {
         RecordQueuedBlockAddressFlowFailure(conn, network, next_job->block_hash, e.what());
@@ -964,6 +1115,7 @@ void RemoveBlockFromSql(std::string_view network, const uint256& block_hash)
 {
     auto& conn = enterprise::PgConnection();
     pqxx::work w(conn);
+    RemoveAddressFlowBlockSummary(w, network, block_hash.GetHex());
     DeleteQueuedBlockAddressFlowExport(w, network, block_hash.GetHex());
     DeleteBlockAddressFlowExportMarker(w, network, block_hash.GetHex());
     w.exec(pqxx::zview{"DELETE FROM blocks WHERE network = $1 AND hash = $2"},

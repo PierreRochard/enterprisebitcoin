@@ -124,45 +124,8 @@ void EnsureBlockExportSchema(pqxx::connection& conn, std::string_view network)
     Exec(w, "CREATE INDEX IF NOT EXISTS blocks_network_height_idx ON blocks (network, height)");
     Exec(w, "CREATE INDEX IF NOT EXISTS blocks_network_prev_hash_idx ON blocks (network, hash_prev_block)");
     Exec(w,
-         "CREATE TABLE IF NOT EXISTS block_address_flows ("
-         "    network TEXT NOT NULL,"
-         "    block_hash TEXT NOT NULL REFERENCES blocks(hash) ON DELETE CASCADE,"
-         "    input_height BIGINT,"
-         "    input_median_time TIMESTAMPTZ,"
-         "    input_txid TEXT,"
-         "    input_wtxid TEXT,"
-         "    input_vector BIGINT,"
-         "    input_size BIGINT,"
-         "    output_height BIGINT NOT NULL,"
-         "    output_median_time TIMESTAMPTZ,"
-         "    output_txid TEXT NOT NULL,"
-         "    output_wtxid TEXT,"
-         "    output_vector BIGINT NOT NULL,"
-         "    output_size BIGINT NOT NULL,"
-         "    output_script_type BIGINT NOT NULL,"
-         "    address TEXT,"
-         "    amount BIGINT NOT NULL"
-         ")");
-    Exec(w,
-         "DO $$ "
-         "BEGIN "
-         "    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'block_address_flows_pkey') THEN "
-         "        ALTER TABLE block_address_flows DROP CONSTRAINT block_address_flows_pkey; "
-         "    END IF; "
-         "    IF EXISTS ("
-         "        SELECT 1 "
-         "        FROM information_schema.columns "
-         "        WHERE table_name = 'block_address_flows' "
-         "          AND column_name = 'id'"
-         "    ) THEN "
-         "        ALTER TABLE block_address_flows ALTER COLUMN id DROP DEFAULT; "
-         "        ALTER TABLE block_address_flows ALTER COLUMN id DROP NOT NULL; "
-         "    END IF; "
-         "END $$");
+         "DROP TABLE IF EXISTS block_address_flows");
     Exec(w, "DROP SEQUENCE IF EXISTS block_address_flows_id_seq");
-    Exec(w, "CREATE INDEX IF NOT EXISTS block_address_flows_block_hash_idx ON block_address_flows (block_hash)");
-    // Keep only the cleanup index during catchup; the large query-serving indexes
-    // can be rebuilt later once backfill is complete.
     Exec(w,
          "CREATE TABLE IF NOT EXISTS block_address_flow_export_queue ("
          "    network TEXT NOT NULL,"
@@ -185,6 +148,39 @@ void EnsureBlockExportSchema(pqxx::connection& conn, std::string_view network)
          "    exported_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
          "    PRIMARY KEY (network, block_hash),"
          "    UNIQUE (network, block_height)"
+         ")");
+    Exec(w,
+         "CREATE TABLE IF NOT EXISTS address_flow_block_summaries ("
+         "    network TEXT NOT NULL,"
+         "    block_hash TEXT NOT NULL,"
+         "    block_height BIGINT NOT NULL,"
+         "    day DATE NOT NULL,"
+         "    median_time TIMESTAMPTZ NOT NULL,"
+         "    received_sats BIGINT NOT NULL,"
+         "    spent_sats BIGINT NOT NULL,"
+         "    net_sats BIGINT NOT NULL,"
+         "    tx_count BIGINT NOT NULL,"
+         "    exported_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+         "    PRIMARY KEY (network, block_hash),"
+         "    UNIQUE (network, block_height)"
+         ")");
+    Exec(w,
+         "CREATE INDEX IF NOT EXISTS address_flow_block_summaries_network_day_height_idx "
+         "ON address_flow_block_summaries (network, day, block_height)");
+    Exec(w,
+         "CREATE TABLE IF NOT EXISTS address_flow_daily ("
+         "    network TEXT NOT NULL,"
+         "    day DATE NOT NULL,"
+         "    received_sats BIGINT NOT NULL,"
+         "    spent_sats BIGINT NOT NULL,"
+         "    net_sats BIGINT NOT NULL,"
+         "    block_count BIGINT NOT NULL,"
+         "    tx_count BIGINT NOT NULL,"
+         "    last_block_height BIGINT NOT NULL,"
+         "    last_block_hash TEXT NOT NULL,"
+         "    median_time TIMESTAMPTZ NOT NULL,"
+         "    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+         "    PRIMARY KEY (network, day)"
          ")");
     w.commit();
 }
