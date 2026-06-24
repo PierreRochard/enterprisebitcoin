@@ -119,6 +119,7 @@ cmake_dependent_option(BUILD_WALLET_TOOL "Build bitcoin-wallet tool." ${BUILD_TE
 
 option(ENABLE_EXTERNAL_SIGNER "Enable external signer support." ON)
 option(WITH_ZMQ "Enable ZMQ notifications." OFF)
+option(WITH_ENTERPRISE_SQL "Enable Enterprise Bitcoin PostgreSQL export hooks." ON)
 cmake_dependent_option(ENABLE_IPC "Build multiprocess bitcoin-node and bitcoin-gui executables in addition to monolithic bitcoind and bitcoin-qt executables." ON "NOT WIN32" OFF)
 cmake_dependent_option(WITH_EXTERNAL_LIBMULTIPROCESS "Build with external libmultiprocess library instead of with local git subtree when ENABLE_IPC is enabled. This is not normally recommended, but can be useful for developing libmultiprocess itself." OFF "ENABLE_IPC" OFF)
 option(WITH_EMBEDDED_ASMAP "Embed default ASMap data." ON)
@@ -236,6 +237,10 @@ endif()
 
 if(WITH_ZMQ)
   find_package(ZeroMQ 4.0.0 MODULE REQUIRED)
+endif()
+
+if(WITH_ENTERPRISE_SQL)
+  find_package(LibPQXX MODULE REQUIRED)
 endif()
 
 if(ENABLE_IPC AND WITH_EXTERNAL_LIBMULTIPROCESS)

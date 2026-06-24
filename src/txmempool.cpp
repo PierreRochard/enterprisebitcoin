@@ -11,6 +11,9 @@
 #include <consensus/consensus.h>
 #include <consensus/tx_verify.h>
 #include <consensus/validation.h>
+#ifdef ENABLE_ENTERPRISE_SQL
+#include <enterprise/mempool_to_sql.h>
+#endif
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <random.h>
@@ -258,6 +261,10 @@ void CTxMemPool::addNewTransaction(CTxMemPool::txiter newit)
         entry.GetTxSize(),
         entry.GetFee()
     );
+
+#ifdef ENABLE_ENTERPRISE_SQL
+    MempoolEntryToSql mempool_entry_to_sql{entry};
+#endif
 }
 
 void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
@@ -280,6 +287,10 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
         it->GetFee(),
         std::chrono::duration_cast<std::chrono::duration<std::uint64_t>>(it->GetTime()).count()
     );
+
+#ifdef ENABLE_ENTERPRISE_SQL
+    RemoveMempoolEntry remove_mempool_entry{it->GetTx().GetHash(), reason};
+#endif
 
     for (const CTxIn& txin : it->GetTx().vin)
         mapNextTx.erase(txin.prevout);

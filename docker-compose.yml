@@ -1,0 +1,10 @@
+version: '3.8'
+services:
+  bitcoin:
+    build: .
+    volumes:
+      - bitcoin-data:/root/.bitcoin
+
+volumes:
+  bitcoin-data:
+    external: true

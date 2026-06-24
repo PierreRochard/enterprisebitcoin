@@ -18,6 +18,10 @@
 #include <consensus/tx_verify.h>
 #include <consensus/validation.h>
 #include <cuckoocache.h>
+#ifdef ENABLE_ENTERPRISE_SQL
+#include <enterprise/block_to_sql.h>
+#include <enterprise/utxo_set_to_sql.h>
+#endif
 #include <flatfile.h>
 #include <hash.h>
 #include <kernel/chainparams.h>
@@ -2520,6 +2524,17 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     std::vector<PrecomputedTransactionData> txsdata(block.vtx.size());
     std::optional<CCheckQueueControl<CScriptCheck>> control;
     if (auto& queue = m_chainman.GetCheckQueue(); queue.HasThreads() && fScriptChecks) control.emplace(queue);
+
+#ifdef ENABLE_ENTERPRISE_SQL
+    if (!fJustCheck) {
+        this->CoinsTip().Flush();
+        std::unique_ptr<CCoinsViewCursor> pcursor{CHECK_NONFATAL(this->CoinsDB().Cursor())};
+        BlockToSql block_to_sql{pindex, block, view, flags, pcursor.get()};
+        if (pindex->nHeight % 4032 == 0 && pindex->nHeight > 867628) {
+            UtxoSetToSql utxo_set_to_sql{pindex, block, view, flags, pcursor.get()};
+        }
+    }
+#endif
 
     std::vector<int> prevheights;
     CAmount nFees = 0;
