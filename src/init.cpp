@@ -22,6 +22,10 @@
 #include <consensus/params.h>
 #include <crypto/hex_base.h>
 #include <dbwrapper.h>
+#ifdef ENABLE_ENTERPRISE_SQL
+#include <enterprise/enterprise_index.h>
+#include <enterprise/options.h>
+#endif
 #include <httprpc.h>
 #include <httpserver.h>
 #include <index/base.h>
@@ -393,6 +397,9 @@ void Shutdown(NodeContext& node)
     if (g_txindex) g_txindex.reset();
     if (g_txospenderindex) g_txospenderindex.reset();
     if (g_coin_stats_index) g_coin_stats_index.reset();
+#ifdef ENABLE_ENTERPRISE_SQL
+    if (g_enterprise_index) g_enterprise_index.reset();
+#endif
     DestroyAllBlockFilterIndexes();
     node.indexes.clear(); // all instances are nullptr now
 
@@ -526,6 +533,11 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-blockreconstructionextratxn=<n>", strprintf("Extra transactions to keep in memory for compact block reconstructions (default: %u)", DEFAULT_BLOCK_RECONSTRUCTION_EXTRA_TXN), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-blocksonly", strprintf("Whether to reject transactions from network peers. Disables automatic broadcast and rebroadcast of transactions, unless the source peer has the 'forcerelay' permission. RPC transactions are not affected. (default: %u)", DEFAULT_BLOCKSONLY), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-coinstatsindex", strprintf("Maintain coinstats index used by the gettxoutsetinfo RPC (default: %u)", DEFAULT_COINSTATSINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+#ifdef ENABLE_ENTERPRISE_SQL
+    argsman.AddArg("-enterpriseindex", strprintf("Maintain enterprise block spool and async Postgres writer. Supports pruned nodes by durably capturing block+undo deltas before block files are deleted. When enabled without an explicit -prune setting, defaults to -prune=%u MiB (default: %u)", DEFAULT_ENTERPRISE_PRUNE_TARGET_MIB, DEFAULT_ENTERPRISEINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-enterprisespoolmax=<MiB>", strprintf("Maximum durable enterprise block spool size before validation waits for the Postgres writer. Set to 0 to disable backpressure (default: %u)", DEFAULT_ENTERPRISE_SPOOL_MAX_MIB), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-enterpriseconfig=<file>", "Read enterprise PostgreSQL connection settings from this dotenv-style file. Relative paths are resolved under the network datadir. When unset, <datadir>/<chain>/enterprise.env overrides any .env file in the working directory. Environment variables PGDB, PGUSER, PGPASSWORD, PGHOST, and PGPORT override file values.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+#endif
     argsman.AddArg("-conf=<file>", strprintf("Specify path to read-only configuration file. Relative paths will be prefixed by datadir location (only useable from command line, not configuration file) (default: %s)", BITCOIN_CONF_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-datadir=<dir>", "Specify data directory", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
     argsman.AddArg("-dbbatchsize", strprintf("Maximum database write batch size in bytes (default: %u)", DEFAULT_DB_CACHE_BATCH), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::OPTIONS);
@@ -1024,7 +1036,12 @@ bool AppInitParameterInteraction(const ArgsManager& args)
         g_local_services = ServiceFlags(g_local_services | NODE_COMPACT_FILTERS);
     }
 
-    if (args.GetIntArg("-prune", 0)) {
+    const bool prune_enabled{
+#ifdef ENABLE_ENTERPRISE_SQL
+        args.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX) && !args.IsArgSet("-prune") ? true :
+#endif
+        args.GetIntArg("-prune", 0) != 0};
+    if (prune_enabled) {
         if (args.GetBoolArg("-txindex", DEFAULT_TXINDEX))
             return InitError(_("Prune mode is incompatible with -txindex."));
         if (args.GetBoolArg("-txospenderindex", DEFAULT_TXOSPENDERINDEX))
@@ -1941,6 +1958,13 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
         g_coin_stats_index = std::make_unique<CoinStatsIndex>(interfaces::MakeChain(node), /*cache_size=*/0, false, do_reindex);
         node.indexes.emplace_back(g_coin_stats_index.get());
     }
+
+#ifdef ENABLE_ENTERPRISE_SQL
+    if (args.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX)) {
+        g_enterprise_index = std::make_unique<EnterpriseIndex>(interfaces::MakeChain(node), /*cache_size=*/0, false, do_reindex);
+        node.indexes.emplace_back(g_enterprise_index.get());
+    }
+#endif
 
     // Init indexes
     for (auto index : node.indexes) if (!index->Init()) return false;

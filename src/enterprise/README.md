@@ -4,6 +4,21 @@ Enterprise SQL Export
 This build can export block, mempool, and periodic UTXO statistics to
 PostgreSQL when `WITH_ENTERPRISE_SQL` is enabled.
 
+When `-enterpriseindex=1` is enabled and `-prune` is not set explicitly, the
+node defaults to `-prune=20000`, keeping block and undo files to a 20 GB target.
+Set `-prune=<MiB>` explicitly to choose a different target.
+
+The enterprise index also bounds its durable block spool. By default
+`-enterprisespoolmax=1024` pauses validation when the spool exceeds 1 GiB, then
+lets the Postgres writer drain before accepting more blocks. This keeps the
+spool from recreating the disk pressure that pruning is meant to avoid.
+
+Gap recovery is local-only. If a missing block row can still be read from the
+local pruned block/undo store, the enterprise index queues that block through
+the same durable spool. If the data has already been pruned, the gap is marked
+unavailable; recovery is to rewind or reindex chainstate so validation replays
+the enterprise index.
+
 Dependencies
 ==
 
@@ -38,7 +53,11 @@ psql bitcoin < src/enterprise/schema.sql
 psql bitcoin < src/enterprise/utxo_stats_schemas.sql
 ```
 
-The exporter reads connection settings from `.env` in the working directory:
+The exporter reads connection settings from a dotenv-style file. By default it
+keeps backwards compatibility with `.env` in the working directory, then lets
+`<datadir>/<chain>/enterprise.env` override it. Use `-enterpriseconfig=<file>`
+to read one explicit file instead; relative paths are resolved under the
+network datadir. Environment variables override file values.
 
 ```shell
 PGDB=bitcoin

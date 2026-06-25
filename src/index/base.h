@@ -177,7 +177,7 @@ public:
     void Sync();
 
     /// Stops the instance from staying in sync with blockchain updates.
-    void Stop();
+    virtual void Stop();
 
     /// Get a summary of the index and its state.
     IndexSummary GetSummary() const;

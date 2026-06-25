@@ -1,0 +1,13 @@
+#ifndef BITCOIN_ENTERPRISE_OPTIONS_H
+#define BITCOIN_ENTERPRISE_OPTIONS_H
+
+#pragma once
+
+#include <cstdint>
+
+static constexpr bool DEFAULT_ENTERPRISEINDEX{false};
+static constexpr int64_t DEFAULT_ENTERPRISE_PRUNE_TARGET_MIB{20000};
+static constexpr int64_t DEFAULT_ENTERPRISE_SPOOL_MAX_MIB{1024};
+static constexpr int DEFAULT_ENTERPRISE_GAP_BATCH_SIZE{256};
+
+#endif // BITCOIN_ENTERPRISE_OPTIONS_H

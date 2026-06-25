@@ -241,6 +241,7 @@ endif()
 
 if(WITH_ENTERPRISE_SQL)
   find_package(LibPQXX MODULE REQUIRED)
+  find_package(ZLIB)
 endif()
 
 if(ENABLE_IPC AND WITH_EXTERNAL_LIBMULTIPROCESS)

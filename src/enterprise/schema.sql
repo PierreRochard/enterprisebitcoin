@@ -86,6 +86,38 @@ CREATE TABLE blocks
     non_ordinals_fees                                BIGINT
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS blocks_network_height_idx ON blocks(network, height);
+
+CREATE TABLE IF NOT EXISTS enterprise_block_ingest
+(
+    network                                          TEXT NOT NULL,
+    hash                                             TEXT NOT NULL,
+    height                                           BIGINT NOT NULL,
+    event_type                                       TEXT NOT NULL,
+    status                                           TEXT NOT NULL,
+    source                                           TEXT NOT NULL,
+    spool_path                                       TEXT,
+    attempts                                         BIGINT NOT NULL DEFAULT 0,
+    last_error                                       TEXT,
+    queued_at                                        timestamp with time zone NOT NULL DEFAULT now(),
+    updated_at                                       timestamp with time zone NOT NULL DEFAULT now(),
+    completed_at                                     timestamp with time zone,
+    PRIMARY KEY (network, hash, event_type)
+);
+
+CREATE TABLE IF NOT EXISTS enterprise_block_gaps
+(
+    network                                          TEXT NOT NULL,
+    height                                           BIGINT NOT NULL,
+    expected_hash                                    TEXT,
+    status                                           TEXT NOT NULL,
+    source                                           TEXT,
+    last_error                                       TEXT,
+    first_seen_at                                    timestamp with time zone NOT NULL DEFAULT now(),
+    updated_at                                       timestamp with time zone NOT NULL DEFAULT now(),
+    PRIMARY KEY (network, height)
+);
+
 CREATE TABLE mempool_entries
 (
     txid                 TEXT PRIMARY KEY,

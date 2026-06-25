@@ -6,7 +6,8 @@
 #include <common/system.h>
 #include <core_io.h>
 #include <enterprise/block_to_sql.h>
-#include <enterprise/dotenv.h>
+#include <enterprise/network.h>
+#include <enterprise/pg_config.h>
 #include <enterprise/utilities.h>
 #include <index/txindex.h>
 #include <key_io.h>
@@ -19,19 +20,61 @@
 #include <script/solver.h>
 #include <serialize.h>
 #include <txmempool.h>
+#include <undo.h>
+#include <util/check.h>
 #include <util/chaintype.h>
 
 #include <array>
 #include <cmath>
+#include <stdexcept>
 #include <map>
 #include <pqxx/pqxx>
 #include <sstream>
 #include <string>
 #include <vector>
 
+namespace {
 
 std::string ChainToString() {
-    return ChainTypeToString(gArgs.GetChainType());
+    return EnterpriseChainToString(gArgs.GetChainType());
+}
+
+pqxx::connection ConnectEnterprisePg()
+{
+    return pqxx::connection{enterprise::PgConnectionString()};
+}
+
+} // namespace
+
+void DeleteBlockFromSql(const uint256& hash)
+{
+    pqxx::connection c{ConnectEnterprisePg()};
+    pqxx::work w{c};
+    c.prepare("DeleteBlock", "DELETE FROM blocks WHERE hash = $1;");
+    w.exec_prepared("DeleteBlock", hash.GetHex());
+    w.commit();
+}
+
+BlockToSql::BlockToSql(const CBlockIndex* block_index, const CBlock& block, const CBlockUndo& undo, script_verify_flags flags)
+{
+    CCoinsViewCache view{&CoinsViewEmpty::Get(), /*deterministic=*/true};
+
+    if (block.vtx.size() > 1 && undo.vtxundo.size() != block.vtx.size() - 1) {
+        throw std::runtime_error("block undo transaction count mismatch");
+    }
+
+    for (std::size_t tx_index = 1; tx_index < block.vtx.size(); ++tx_index) {
+        const CTransaction& tx{*block.vtx.at(tx_index)};
+        const CTxUndo& tx_undo{undo.vtxundo.at(tx_index - 1)};
+        if (tx_undo.vprevout.size() != tx.vin.size()) {
+            throw std::runtime_error("block undo input count mismatch");
+        }
+        for (std::size_t input_index = 0; input_index < tx.vin.size(); ++input_index) {
+            view.AddCoin(tx.vin.at(input_index).prevout, Coin{tx_undo.vprevout.at(input_index)}, /*possible_overwrite=*/true);
+        }
+    }
+
+    BlockToSql writer{block_index, block, view, flags, /*cursor=*/nullptr};
 }
 
 
@@ -39,21 +82,7 @@ BlockToSql::BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoi
                        CCoinsViewCursor *cursor) {
     static constexpr size_t PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
 
-    auto &dotenv = env;
-    dotenv.config();
-
-    std::stringstream connStream;
-    connStream << "dbname = "
-               << dotenv["PGDB"]
-               << " user = "
-               << dotenv["PGUSER"]
-               << " password = "
-               << dotenv["PGPASSWORD"]
-               << " hostaddr = "
-               << dotenv["PGHOST"]
-               << " port = "
-               << dotenv["PGPORT"];
-    pqxx::connection c(connStream.str());
+    pqxx::connection c{ConnectEnterprisePg()};
 
     pqxx::work w(c);
 
@@ -503,12 +532,13 @@ BlockToSql::BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoi
     input_script_types_string_stream << "]";
     output_script_types_string_stream << "]";
 
-    c.prepare("DeleteBlock", "DELETE FROM blocks WHERE hash = $1;");
-    auto r2{w.exec_prepared(
+    c.prepare("DeleteBlock", "DELETE FROM blocks WHERE hash = $1 OR (network = $2 AND height = $3);");
+    w.exec_prepared(
             "DeleteBlock",
-            block.GetHash().GetHex()                   // hash
-    )};
-    w.commit();
+            block.GetHash().GetHex(), // hash
+            ChainToString(),          // network
+            block_index->nHeight      // height
+    );
 
     c.prepare("InsertBlock", "INSERT INTO blocks "
                              "("

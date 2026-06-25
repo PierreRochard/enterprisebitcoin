@@ -5,6 +5,9 @@
 #include <node/blockmanager_args.h>
 
 #include <common/args.h>
+#ifdef ENABLE_ENTERPRISE_SQL
+#include <enterprise/options.h>
+#endif
 #include <node/blockstorage.h>
 #include <node/database_args.h>
 #include <tinyformat.h>
@@ -20,7 +23,11 @@ util::Result<void> ApplyArgsManOptions(const ArgsManager& args, BlockManager::Op
 {
     if (auto value{args.GetBoolArg("-blocksxor")}) opts.use_xor = *value;
     // block pruning; get the amount of disk space (in MiB) to allot for block & undo files
-    int64_t nPruneArg{args.GetIntArg("-prune", opts.prune_target)};
+    int64_t nPruneArg{
+#ifdef ENABLE_ENTERPRISE_SQL
+        args.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX) && !args.IsArgSet("-prune") ? DEFAULT_ENTERPRISE_PRUNE_TARGET_MIB :
+#endif
+        args.GetIntArg("-prune", opts.prune_target)};
     if (nPruneArg < 0) {
         return util::Error{_("Prune cannot be configured with a negative value.")};
     }

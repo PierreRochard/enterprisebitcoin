@@ -191,8 +191,11 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
   consensus/tx_verify.cpp
   dbwrapper.cpp
   deploymentstatus.cpp
+  $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/block_spool.cpp>
   $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/block_to_sql.cpp>
+  $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/enterprise_index.cpp>
   $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/mempool_to_sql.cpp>
+  $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/pg.cpp>
   $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/utxo_set_to_sql.cpp>
   flatfile.cpp
   headerssync.cpp
@@ -294,10 +297,14 @@ target_link_libraries(bitcoin_node
     univalue
     Boost::headers
     $<$<BOOL:${WITH_ENTERPRISE_SQL}>:LibPQXX::pqxx>
+    $<$<TARGET_EXISTS:ZLIB::ZLIB>:ZLIB::ZLIB>
     $<TARGET_NAME_IF_EXISTS:USDT::headers>
 )
 if(WITH_ENTERPRISE_SQL)
   target_compile_definitions(bitcoin_node PRIVATE ENABLE_ENTERPRISE_SQL=1)
+  if(TARGET ZLIB::ZLIB)
+    target_compile_definitions(bitcoin_node PRIVATE HAVE_ENTERPRISE_ZLIB=1)
+  endif()
 endif()
 if(WITH_EMBEDDED_ASMAP)
   target_compile_definitions(bitcoin_node PRIVATE ENABLE_EMBEDDED_ASMAP=1)

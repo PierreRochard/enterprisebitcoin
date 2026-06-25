@@ -9,9 +9,12 @@
 #include <primitives/transaction.h>
 #include <script/verify_flags.h>
 #include <txmempool.h>
+#include <uint256.h>
 
 #include <cstdint>
 #include <string>
+
+class CBlockUndo;
 
 struct FeeData {
     unsigned int fee;
@@ -49,6 +52,9 @@ class BlockToSql {
 public:
     BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, script_verify_flags flags,
                CCoinsViewCursor *cursor);
+    BlockToSql(const CBlockIndex* block_index, const CBlock& block, const CBlockUndo& undo, script_verify_flags flags);
 };
+
+void DeleteBlockFromSql(const uint256& hash);
 
 #endif //BLOCK_TO_SQL_H
