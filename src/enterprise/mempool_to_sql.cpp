@@ -1,39 +1,24 @@
-#include <enterprise/dotenv.h>
 #include <enterprise/mempool_to_sql.h>
+#include <enterprise/network.h>
+#include <enterprise/pg_config.h>
 
 #include <common/args.h>
 #include <kernel/mempool_removal_reason.h>
-#include <util/chaintype.h>
 #include <util/time.h>
 
 #include <chrono>
 #include <pqxx/pqxx>
-#include <sstream>
 #include <string>
 
 namespace {
 std::string ChainToString()
 {
-    return ChainTypeToString(gArgs.GetChainType());
+    return EnterpriseChainToString(gArgs.GetChainType());
 }
 
 pqxx::connection Connect()
 {
-    auto& dotenv = env;
-    dotenv.config();
-
-    std::stringstream conn_stream;
-    conn_stream << "dbname = "
-                << dotenv["PGDB"]
-                << " user = "
-                << dotenv["PGUSER"]
-                << " password = "
-                << dotenv["PGPASSWORD"]
-                << " hostaddr = "
-                << dotenv["PGHOST"]
-                << " port = "
-                << dotenv["PGPORT"];
-    return pqxx::connection{conn_stream.str()};
+    return pqxx::connection{enterprise::PgConnectionString()};
 }
 } // namespace
 

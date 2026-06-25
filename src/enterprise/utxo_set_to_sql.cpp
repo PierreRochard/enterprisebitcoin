@@ -5,7 +5,7 @@
 #include <common/args.h>
 #include <common/system.h>
 #include <core_io.h>
-#include <enterprise/dotenv.h>
+#include <enterprise/pg_config.h>
 #include <enterprise/utilities.h>
 #include <enterprise/utxo_set_to_sql.h>
 #include <index/txindex.h>
@@ -83,21 +83,7 @@ UtxoSetToSql::UtxoSetToSql(const CBlockIndex *block_index, const CBlock &block, 
     std::vector<double> utxo_balance;
     std::vector<double> utxo_balance_usd;
 
-    auto &dotenv = env;
-    dotenv.config();
-
-    std::stringstream connStream;
-    connStream << "dbname = "
-               << dotenv["PGDB"]
-               << " user = "
-               << dotenv["PGUSER"]
-               << " password = "
-               << dotenv["PGPASSWORD"]
-               << " hostaddr = "
-               << dotenv["PGHOST"]
-               << " port = "
-               << dotenv["PGPORT"];
-    pqxx::connection c(connStream.str());
+    pqxx::connection c{enterprise::PgConnectionString()};
 
     pqxx::work w1(c);
 

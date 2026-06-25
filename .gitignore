@@ -18,6 +18,12 @@
 
 /CMakeUserPresets.json
 
+# Enterprise SQL local configuration and runtime spool records.
+/.env
+enterprise.env
+*.ebd
+*.ebd.tmp
+
 # Previous releases
 /releases
 

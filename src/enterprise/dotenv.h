@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include <cstdlib>
 #include <fstream>
+#include <string>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
@@ -243,7 +245,7 @@ inline namespace dotenv {
             if (bond or binded != nullptr) throw std::runtime_error("Something weird is happening");
             if (_key.empty()) throw std::runtime_error("");
 
-            map.emplace(_key, _value);
+            map[_key] = _value;
         }
 
     private:
@@ -313,7 +315,11 @@ inline namespace dotenv {
         typedef std::string value_type;
 
     public:
-        inline dotenv& config(const std::string& full_path = env_filename) {
+        inline dotenv& config(const std::string& full_path = env_filename, bool reset = false) {
+            if (reset) {
+                _env.clear();
+            }
+
             std::ifstream env_file;
             env_file.open(full_path);
 
@@ -326,8 +332,12 @@ inline namespace dotenv {
             return *this;
         }
 
-        inline const value_type& operator[](const key_type& k) const {
+        inline value_type operator[](const key_type& k) const {
             if (not _config) throw std::logic_error(config_err);
+
+            if (const char* value = std::getenv(k.c_str())) {
+                return value;
+            }
 
             try {
                 return _env.at(k);
