@@ -140,6 +140,10 @@ add_executable(test_bitcoin
   versionbits_tests.cpp
 )
 
+if(WITH_ENTERPRISE_SQL)
+  target_sources(test_bitcoin PRIVATE enterprise_block_spool_tests.cpp)
+endif()
+
 include(TargetDataSources)
 target_json_data_sources(test_bitcoin
   data/base58_encode_decode.json
