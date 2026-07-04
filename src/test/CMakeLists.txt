@@ -141,7 +141,10 @@ add_executable(test_bitcoin
 )
 
 if(WITH_ENTERPRISE_SQL)
-  target_sources(test_bitcoin PRIVATE enterprise_block_spool_tests.cpp)
+  target_sources(test_bitcoin PRIVATE
+    enterprise_block_spool_tests.cpp
+    enterprise_denomination_classifier_tests.cpp
+  )
 endif()
 
 include(TargetDataSources)

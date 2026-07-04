@@ -83,7 +83,33 @@ CREATE TABLE blocks
     non_ordinals_count                               BIGINT,
     non_ordinals_size                                BIGINT,
     non_ordinals_vsize                               BIGINT,
-    non_ordinals_fees                                BIGINT
+    non_ordinals_fees                                BIGINT,
+
+    btc_usd_price                                   DOUBLE PRECISION,
+    btc_usd_price_low                               DOUBLE PRECISION,
+    btc_usd_price_high                              DOUBLE PRECISION,
+    btc_usd_price_source                            TEXT,
+    denomination_eligible_outputs_count             BIGINT,
+    denomination_eligible_value_sats                BIGINT,
+
+    usd_denom_outputs_count                         BIGINT,
+    usd_denom_value_sats                            BIGINT,
+    usd_denom_confidence_sum                        DOUBLE PRECISION,
+
+    sats_denom_outputs_count                        BIGINT,
+    sats_denom_value_sats                           BIGINT,
+    sats_denom_confidence_sum                       DOUBLE PRECISION,
+
+    unknown_denom_outputs_count                     BIGINT,
+    unknown_denom_value_sats                        BIGINT,
+
+    ambiguous_denom_outputs_count                   BIGINT,
+    ambiguous_denom_value_sats                      BIGINT,
+
+    likely_change_outputs_count                     BIGINT,
+    likely_change_value_sats                        BIGINT,
+
+    denomination_classifier_version                 TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS blocks_network_height_idx ON blocks(network, height);
@@ -151,6 +177,9 @@ CREATE TABLE mempool_entries
 
 CREATE TABLE IF NOT EXISTS prices
 (
-    day   timestamp with time zone PRIMARY KEY,
-    price DOUBLE PRECISION NOT NULL
+    day          timestamp with time zone PRIMARY KEY,
+    price        DOUBLE PRECISION NOT NULL,
+    price_low    DOUBLE PRECISION,
+    price_high   DOUBLE PRECISION,
+    price_source TEXT
 );

@@ -6,7 +6,9 @@
 #include <common/system.h>
 #include <core_io.h>
 #include <enterprise/block_to_sql.h>
+#include <enterprise/denomination_classifier.h>
 #include <enterprise/network.h>
+#include <enterprise/pg.h>
 #include <enterprise/pg_config.h>
 #include <enterprise/utilities.h>
 #include <index/txindex.h>
@@ -26,10 +28,12 @@
 
 #include <array>
 #include <cmath>
-#include <stdexcept>
+#include <iomanip>
 #include <map>
+#include <optional>
 #include <pqxx/pqxx>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -42,6 +46,147 @@ std::string ChainToString() {
 pqxx::connection ConnectEnterprisePg()
 {
     return pqxx::connection{enterprise::PgConnectionString()};
+}
+
+struct DenominationBlockStats {
+    int64_t eligible_outputs_count{0};
+    CAmount eligible_value_sats{0};
+
+    int64_t usd_outputs_count{0};
+    CAmount usd_value_sats{0};
+    double usd_confidence_sum{0.0};
+
+    int64_t sats_outputs_count{0};
+    CAmount sats_value_sats{0};
+    double sats_confidence_sum{0.0};
+
+    int64_t unknown_outputs_count{0};
+    CAmount unknown_value_sats{0};
+
+    int64_t ambiguous_outputs_count{0};
+    CAmount ambiguous_value_sats{0};
+
+    int64_t likely_change_outputs_count{0};
+    CAmount likely_change_value_sats{0};
+};
+
+std::string DoubleSqlParam(double value)
+{
+    std::ostringstream stream;
+    stream << std::setprecision(17) << value;
+    return stream.str();
+}
+
+std::optional<enterprise::DenominationPriceWindow> LoadDenominationPriceWindow(
+    pqxx::connection& c,
+    pqxx::work& w,
+    int64_t block_time)
+{
+    c.prepare("EnterprisePricesColumns", R"sql(
+        SELECT
+            EXISTS (
+                SELECT 1
+                FROM pg_attribute
+                WHERE attrelid = 'prices'::regclass
+                  AND attname = 'price_low'
+                  AND attnum > 0
+                  AND NOT attisdropped
+            ),
+            EXISTS (
+                SELECT 1
+                FROM pg_attribute
+                WHERE attrelid = 'prices'::regclass
+                  AND attname = 'price_high'
+                  AND attnum > 0
+                  AND NOT attisdropped
+            ),
+            EXISTS (
+                SELECT 1
+                FROM pg_attribute
+                WHERE attrelid = 'prices'::regclass
+                  AND attname = 'price_source'
+                  AND attnum > 0
+                  AND NOT attisdropped
+            ),
+            (
+                SELECT atttypid::regtype::text
+                FROM pg_attribute
+                WHERE attrelid = 'prices'::regclass
+                  AND attname = 'day'
+                  AND attnum > 0
+                  AND NOT attisdropped
+            )
+    )sql");
+    const pqxx::result column_result{w.exec_prepared("EnterprisePricesColumns")};
+    const bool has_low{!column_result.empty() && column_result.front()[0].as<bool>()};
+    const bool has_high{!column_result.empty() && column_result.front()[1].as<bool>()};
+    const bool has_source{!column_result.empty() && column_result.front()[2].as<bool>()};
+    const std::string day_type{column_result.empty() || column_result.front()[3].is_null()
+                                   ? ""
+                                   : column_result.front()[3].as<std::string>()};
+
+    std::string sql{"SELECT price, "};
+    sql += has_low ? "price_low" : "NULL::double precision";
+    sql += ", ";
+    sql += has_high ? "price_high" : "NULL::double precision";
+    sql += ", ";
+    sql += has_source ? "price_source" : "NULL::text";
+    sql += "\n        FROM prices\n        WHERE ";
+    if (day_type == "timestamp with time zone") {
+        sql += "(day AT TIME ZONE 'UTC')::date = (to_timestamp($1) AT TIME ZONE 'UTC')::date\n";
+        sql += "        ORDER BY ABS(EXTRACT(EPOCH FROM (day - to_timestamp($1))))\n";
+    } else if (day_type == "timestamp without time zone") {
+        sql += "day::date = (to_timestamp($1) AT TIME ZONE 'UTC')::date\n";
+        sql += "        ORDER BY ABS(EXTRACT(EPOCH FROM (day - (to_timestamp($1) AT TIME ZONE 'UTC'))))\n";
+    } else {
+        sql += "day = (to_timestamp($1) AT TIME ZONE 'UTC')::date\n";
+    }
+    sql += "        LIMIT 1";
+    c.prepare("EnterpriseBlockPriceWindow", sql);
+    const pqxx::result result{w.exec_prepared("EnterpriseBlockPriceWindow", block_time)};
+    if (result.empty()) return std::nullopt;
+
+    const auto row{result.front()};
+    const double price{row[0].as<double>()};
+    const bool use_fallback_window{row[1].is_null() || row[2].is_null()};
+    enterprise::DenominationPriceWindow window{
+        .price = price,
+        .low = use_fallback_window ? price * 0.975 : row[1].as<double>(),
+        .high = use_fallback_window ? price * 1.025 : row[2].as<double>(),
+        .source = use_fallback_window ? "prices.price:fallback_2_5pct" : (row[3].is_null() ? "prices" : row[3].as<std::string>()),
+    };
+    if (!window.Valid()) return std::nullopt;
+    return window;
+}
+
+void AddDenominationResult(
+    DenominationBlockStats& stats,
+    CAmount value_sats,
+    const enterprise::DenominationResult& result)
+{
+    stats.eligible_outputs_count += 1;
+    stats.eligible_value_sats += value_sats;
+
+    switch (result.category) {
+    case enterprise::DenominationCategory::USD:
+        stats.usd_outputs_count += 1;
+        stats.usd_value_sats += value_sats;
+        stats.usd_confidence_sum += result.confidence;
+        break;
+    case enterprise::DenominationCategory::SATS:
+        stats.sats_outputs_count += 1;
+        stats.sats_value_sats += value_sats;
+        stats.sats_confidence_sum += result.confidence;
+        break;
+    case enterprise::DenominationCategory::UNKNOWN:
+        stats.unknown_outputs_count += 1;
+        stats.unknown_value_sats += value_sats;
+        break;
+    case enterprise::DenominationCategory::AMBIGUOUS:
+        stats.ambiguous_outputs_count += 1;
+        stats.ambiguous_value_sats += value_sats;
+        break;
+    }
 }
 
 } // namespace
@@ -85,6 +230,13 @@ BlockToSql::BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoi
     pqxx::connection c{ConnectEnterprisePg()};
 
     pqxx::work w(c);
+    enterprise::EnsureEnterpriseTables(w);
+    const std::optional<enterprise::DenominationPriceWindow> denomination_price_window{
+        LoadDenominationPriceWindow(c, w, block_index->GetBlockTime())};
+    const std::string btc_usd_price_param{denomination_price_window ? DoubleSqlParam(denomination_price_window->price) : ""};
+    const std::string btc_usd_price_low_param{denomination_price_window ? DoubleSqlParam(denomination_price_window->low) : ""};
+    const std::string btc_usd_price_high_param{denomination_price_window ? DoubleSqlParam(denomination_price_window->high) : ""};
+    const std::string btc_usd_price_source_param{denomination_price_window ? denomination_price_window->source : ""};
 
     std::map<CAmount, unsigned int> fee_rates;
 
@@ -142,6 +294,8 @@ BlockToSql::BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoi
 
     int64_t block_net_utxo_size_impact = 0;
 
+    DenominationBlockStats denomination_stats;
+
     std::ostringstream output_data_string_stream;
     output_data_string_stream << "[";
 
@@ -179,6 +333,8 @@ BlockToSql::BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoi
         TransactionData transaction_data = TransactionData{transaction_index, block.vtx[transaction_index]};
 
         bool transaction_found_ordinal_prefix = false;
+        bool transaction_has_confident_denomination = false;
+        std::vector<CAmount> transaction_unknown_denomination_values;
 
         // Outputs
         for (std::size_t output_vector = 0; output_vector < transaction->vout.size(); ++output_vector) {
@@ -244,6 +400,18 @@ BlockToSql::BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoi
                 coinbase += txout_data.nValue;
             }
 
+            if (!transaction_data.is_coinbase && txout_data.nValue > 0 && !txout_data.scriptPubKey.IsUnspendable()) {
+                const enterprise::DenominationResult denomination_result{
+                    enterprise::ClassifyOutputDenomination(txout_data.nValue, denomination_price_window)};
+                AddDenominationResult(denomination_stats, txout_data.nValue, denomination_result);
+                if (denomination_result.category == enterprise::DenominationCategory::USD ||
+                    denomination_result.category == enterprise::DenominationCategory::SATS) {
+                    transaction_has_confident_denomination = true;
+                } else if (denomination_result.category == enterprise::DenominationCategory::UNKNOWN) {
+                    transaction_unknown_denomination_values.push_back(txout_data.nValue);
+                }
+            }
+
             output_data_string_stream << "[";
             output_data_string_stream << output_size << ",";
             output_data_string_stream << txout_data.nValue << ",";
@@ -281,6 +449,11 @@ BlockToSql::BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoi
             addresses_string_stream << address_string << ","; // address
             addresses_string_stream << txout_data.nValue << "\n"; // amount
 
+        }
+
+        if (transaction_has_confident_denomination && transaction_unknown_denomination_values.size() == 1) {
+            denomination_stats.likely_change_outputs_count += 1;
+            denomination_stats.likely_change_value_sats += transaction_unknown_denomination_values.front();
         }
 
         //        Inputs
@@ -623,7 +796,33 @@ BlockToSql::BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoi
                              "non_ordinals_count , "
                              "non_ordinals_size , "
                              "non_ordinals_vsize , "
-                             "non_ordinals_fees"
+                             "non_ordinals_fees, "
+
+                             "btc_usd_price, "
+                             "btc_usd_price_low, "
+                             "btc_usd_price_high, "
+                             "btc_usd_price_source, "
+                             "denomination_eligible_outputs_count, "
+                             "denomination_eligible_value_sats, "
+
+                             "usd_denom_outputs_count, "
+                             "usd_denom_value_sats, "
+                             "usd_denom_confidence_sum, "
+
+                             "sats_denom_outputs_count, "
+                             "sats_denom_value_sats, "
+                             "sats_denom_confidence_sum, "
+
+                             "unknown_denom_outputs_count, "
+                             "unknown_denom_value_sats, "
+
+                             "ambiguous_denom_outputs_count, "
+                             "ambiguous_denom_value_sats, "
+
+                             "likely_change_outputs_count, "
+                             "likely_change_value_sats, "
+
+                             "denomination_classifier_version"
 
                              ") "
 
@@ -710,7 +909,33 @@ BlockToSql::BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoi
                              "$64, "  // non_ordinals_count
                              "$65, "  // non_ordinals_size
                              "$66, "  // non_ordinals_vsize
-                             "$67 "  // non_ordinals_fees
+                             "$67, "  // non_ordinals_fees
+
+                             "NULLIF($68::text, '')::double precision, " // btc_usd_price
+                             "NULLIF($69::text, '')::double precision, " // btc_usd_price_low
+                             "NULLIF($70::text, '')::double precision, " // btc_usd_price_high
+                             "NULLIF($71::text, ''), " // btc_usd_price_source
+                             "$72, " // denomination_eligible_outputs_count
+                             "$73, " // denomination_eligible_value_sats
+
+                             "$74, " // usd_denom_outputs_count
+                             "$75, " // usd_denom_value_sats
+                             "$76, " // usd_denom_confidence_sum
+
+                             "$77, " // sats_denom_outputs_count
+                             "$78, " // sats_denom_value_sats
+                             "$79, " // sats_denom_confidence_sum
+
+                             "$80, " // unknown_denom_outputs_count
+                             "$81, " // unknown_denom_value_sats
+
+                             "$82, " // ambiguous_denom_outputs_count
+                             "$83, " // ambiguous_denom_value_sats
+
+                             "$84, " // likely_change_outputs_count
+                             "$85, " // likely_change_value_sats
+
+                             "$86 "  // denomination_classifier_version
 
                              ") ON CONFLICT DO NOTHING ;"
     );
@@ -724,7 +949,7 @@ BlockToSql::BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoi
             block_index->nHeight,                 // height
             GetBlockSubsidy(block_index->nHeight, Params().GetConsensus()), // subsidy
 
-            block_index->nTx,                     // transactions_count
+            static_cast<int64_t>(block.vtx.size()), // transactions_count
             block_index->nVersion,                // version
             block_index->nStatus,                 // status
 
@@ -796,7 +1021,33 @@ BlockToSql::BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoi
             non_ordinals_count,
             non_ordinals_size,
             non_ordinals_vsize,
-            non_ordinals_fees
+            non_ordinals_fees,
+
+            btc_usd_price_param,
+            btc_usd_price_low_param,
+            btc_usd_price_high_param,
+            btc_usd_price_source_param,
+            denomination_stats.eligible_outputs_count,
+            denomination_stats.eligible_value_sats,
+
+            denomination_stats.usd_outputs_count,
+            denomination_stats.usd_value_sats,
+            denomination_stats.usd_confidence_sum,
+
+            denomination_stats.sats_outputs_count,
+            denomination_stats.sats_value_sats,
+            denomination_stats.sats_confidence_sum,
+
+            denomination_stats.unknown_outputs_count,
+            denomination_stats.unknown_value_sats,
+
+            denomination_stats.ambiguous_outputs_count,
+            denomination_stats.ambiguous_value_sats,
+
+            denomination_stats.likely_change_outputs_count,
+            denomination_stats.likely_change_value_sats,
+
+            enterprise::DENOMINATION_CLASSIFIER_VERSION
 
     )};
     w.commit();

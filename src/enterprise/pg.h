@@ -2,6 +2,7 @@
 #define BITCOIN_ENTERPRISE_PG_H
 
 #include <enterprise/block_delta.h>
+#include <pqxx/pqxx>
 #include <util/fs.h>
 
 #include <cstddef>
@@ -32,6 +33,8 @@ struct BlockRowKey {
 };
 
 [[nodiscard]] std::string Network();
+
+void EnsureEnterpriseTables(pqxx::work& w);
 
 void MarkIngestStarted(const EnterpriseBlockDelta& delta, const fs::path& spool_path, const std::string& source);
 void MarkIngestSucceeded(const EnterpriseBlockDelta& delta, const fs::path& spool_path, const std::string& source);

@@ -193,6 +193,7 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
   deploymentstatus.cpp
   $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/block_spool.cpp>
   $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/block_to_sql.cpp>
+  $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/denomination_classifier.cpp>
   $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/enterprise_index.cpp>
   $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/mempool_to_sql.cpp>
   $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/pg.cpp>

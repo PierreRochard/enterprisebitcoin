@@ -16,7 +16,7 @@ spool from recreating the disk pressure that pruning is meant to avoid.
 Gap recovery is local-only. If a missing block row can still be read from the
 local pruned block/undo store, the enterprise index queues that block through
 the same durable spool. If the data has already been pruned, the gap is marked
-unavailable; recovery is to rewind or reindex chainstate so validation replays
+unavailable; recovery is to rewind or run full `-reindex` so validation replays
 the enterprise index.
 
 Dependencies
@@ -58,6 +58,15 @@ keeps backwards compatibility with `.env` in the working directory, then lets
 `<datadir>/<chain>/enterprise.env` override it. Use `-enterpriseconfig=<file>`
 to read one explicit file instead; relative paths are resolved under the
 network datadir. Environment variables override file values.
+
+The denomination classifier uses the block header time for BTC/USD lookup. Daily
+`prices.day` rows match the header time's UTC date; timestamp rows use the
+nearest row on that UTC date.
+`prices.price_low`, `prices.price_high`, and `prices.price_source` are optional;
+when low/high are absent the exporter uses a +/-2.5% window around `price` and
+records the source as `prices.price:fallback_2_5pct`. If no usable row exists,
+eligible non-coinbase outputs are exported as unknown rather than failing the
+block export.
 
 ```shell
 PGDB=bitcoin

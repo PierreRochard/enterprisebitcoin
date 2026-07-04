@@ -33,45 +33,11 @@ pqxx::connection Connect()
     return pqxx::connection{enterprise::PgConnectionString()};
 }
 
-void EnsureEnterpriseTables(pqxx::work& w)
-{
-    w.exec(R"sql(
-        CREATE TABLE IF NOT EXISTS enterprise_block_ingest (
-            network text NOT NULL,
-            hash text NOT NULL,
-            height bigint NOT NULL,
-            event_type text NOT NULL,
-            status text NOT NULL,
-            source text NOT NULL,
-            spool_path text,
-            attempts bigint NOT NULL DEFAULT 0,
-            last_error text,
-            queued_at timestamp with time zone NOT NULL DEFAULT now(),
-            updated_at timestamp with time zone NOT NULL DEFAULT now(),
-            completed_at timestamp with time zone,
-            PRIMARY KEY (network, hash, event_type)
-        )
-    )sql");
-    w.exec(R"sql(
-        CREATE TABLE IF NOT EXISTS enterprise_block_gaps (
-            network text NOT NULL,
-            height bigint NOT NULL,
-            expected_hash text,
-            status text NOT NULL,
-            source text,
-            last_error text,
-            first_seen_at timestamp with time zone NOT NULL DEFAULT now(),
-            updated_at timestamp with time zone NOT NULL DEFAULT now(),
-            PRIMARY KEY (network, height)
-        )
-    )sql");
-}
-
 void MarkIngest(const EnterpriseBlockDelta& delta, const fs::path& spool_path, const std::string& source, const std::string& status, const std::string& error)
 {
     pqxx::connection c{Connect()};
     pqxx::work w{c};
-    EnsureEnterpriseTables(w);
+    enterprise::EnsureEnterpriseTables(w);
     c.prepare("EnterpriseMarkIngest", R"sql(
         INSERT INTO enterprise_block_ingest
             (network, hash, height, event_type, status, source, spool_path, attempts, last_error, completed_at)
@@ -109,6 +75,89 @@ std::string Network()
     return EnterpriseChainToString(gArgs.GetChainType());
 }
 
+void EnsureEnterpriseTables(pqxx::work& w)
+{
+    w.exec(R"sql(
+        CREATE UNIQUE INDEX IF NOT EXISTS blocks_network_height_idx ON blocks(network, height)
+    )sql");
+    w.exec(R"sql(
+        ALTER TABLE blocks
+            ADD COLUMN IF NOT EXISTS btc_usd_price DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS btc_usd_price_low DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS btc_usd_price_high DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS btc_usd_price_source TEXT,
+            ADD COLUMN IF NOT EXISTS denomination_eligible_outputs_count BIGINT,
+            ADD COLUMN IF NOT EXISTS denomination_eligible_value_sats BIGINT,
+            ADD COLUMN IF NOT EXISTS usd_denom_outputs_count BIGINT,
+            ADD COLUMN IF NOT EXISTS usd_denom_value_sats BIGINT,
+            ADD COLUMN IF NOT EXISTS usd_denom_confidence_sum DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS sats_denom_outputs_count BIGINT,
+            ADD COLUMN IF NOT EXISTS sats_denom_value_sats BIGINT,
+            ADD COLUMN IF NOT EXISTS sats_denom_confidence_sum DOUBLE PRECISION,
+            ADD COLUMN IF NOT EXISTS unknown_denom_outputs_count BIGINT,
+            ADD COLUMN IF NOT EXISTS unknown_denom_value_sats BIGINT,
+            ADD COLUMN IF NOT EXISTS ambiguous_denom_outputs_count BIGINT,
+            ADD COLUMN IF NOT EXISTS ambiguous_denom_value_sats BIGINT,
+            ADD COLUMN IF NOT EXISTS likely_change_outputs_count BIGINT,
+            ADD COLUMN IF NOT EXISTS likely_change_value_sats BIGINT,
+            ADD COLUMN IF NOT EXISTS denomination_classifier_version TEXT
+    )sql");
+    w.exec(R"sql(
+        CREATE TABLE IF NOT EXISTS prices
+        (
+            day timestamp with time zone PRIMARY KEY,
+            price DOUBLE PRECISION NOT NULL
+        )
+    )sql");
+    w.exec(R"sql(
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM pg_class
+                WHERE oid = 'prices'::regclass
+                  AND relkind IN ('r', 'p')
+            ) THEN
+                ALTER TABLE prices
+                    ADD COLUMN IF NOT EXISTS price_low DOUBLE PRECISION,
+                    ADD COLUMN IF NOT EXISTS price_high DOUBLE PRECISION,
+                    ADD COLUMN IF NOT EXISTS price_source TEXT;
+            END IF;
+        END
+        $$
+    )sql");
+    w.exec(R"sql(
+        CREATE TABLE IF NOT EXISTS enterprise_block_ingest (
+            network text NOT NULL,
+            hash text NOT NULL,
+            height bigint NOT NULL,
+            event_type text NOT NULL,
+            status text NOT NULL,
+            source text NOT NULL,
+            spool_path text,
+            attempts bigint NOT NULL DEFAULT 0,
+            last_error text,
+            queued_at timestamp with time zone NOT NULL DEFAULT now(),
+            updated_at timestamp with time zone NOT NULL DEFAULT now(),
+            completed_at timestamp with time zone,
+            PRIMARY KEY (network, hash, event_type)
+        )
+    )sql");
+    w.exec(R"sql(
+        CREATE TABLE IF NOT EXISTS enterprise_block_gaps (
+            network text NOT NULL,
+            height bigint NOT NULL,
+            expected_hash text,
+            status text NOT NULL,
+            source text,
+            last_error text,
+            first_seen_at timestamp with time zone NOT NULL DEFAULT now(),
+            updated_at timestamp with time zone NOT NULL DEFAULT now(),
+            PRIMARY KEY (network, height)
+        )
+    )sql");
+}
+
 void MarkIngestStarted(const EnterpriseBlockDelta& delta, const fs::path& spool_path, const std::string& source)
 {
     MarkIngest(delta, spool_path, source, "started", "");
@@ -139,18 +188,16 @@ std::vector<int> FindBlockTableGaps(int chain_tip_height, std::size_t limit)
     c.prepare("EnterpriseFindBlockGaps", R"sql(
         WITH expected(height) AS (
             SELECT generate_series(0, $1::bigint)
-        ), block_counts AS (
-            SELECT height, count(*) AS row_count
-            FROM blocks
-            WHERE network = $2
-              AND height BETWEEN 0 AND $1::bigint
-            GROUP BY height
         ), missing AS (
             SELECT expected.height
             FROM expected
-            LEFT JOIN block_counts ON block_counts.height = expected.height
             LEFT JOIN enterprise_block_gaps gaps ON gaps.height = expected.height AND gaps.network = $2
-            WHERE COALESCE(block_counts.row_count, 0) != 1
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM blocks
+                WHERE network = $2
+                  AND height = expected.height
+            )
               AND COALESCE(gaps.status, '') NOT IN ('queued', 'unavailable')
             ORDER BY expected.height
             LIMIT $3
@@ -180,14 +227,11 @@ BlockTableCoverage GetBlockTableCoverage(int chain_tip_height)
     pqxx::work w{c};
     EnsureEnterpriseTables(w);
     c.prepare("EnterpriseBlockTableCoverage", R"sql(
-        WITH expected(height) AS (
-            SELECT generate_series(0, $1::bigint)
-        ), block_counts AS (
-            SELECT height, count(*) AS row_count
+        WITH block_counts AS (
+            SELECT count(*) AS populated_heights
             FROM blocks
             WHERE network = $2
               AND height BETWEEN 0 AND $1::bigint
-            GROUP BY height
         ), unavailable AS (
             SELECT count(*) AS unavailable_heights
             FROM enterprise_block_gaps
@@ -196,15 +240,13 @@ BlockTableCoverage GetBlockTableCoverage(int chain_tip_height)
               AND status = 'unavailable'
         )
         SELECT
-            count(*) AS expected_blocks,
-            count(block_counts.height) AS populated_heights,
-            count(*) FILTER (WHERE block_counts.height IS NULL) AS missing_heights,
-            COALESCE(sum(GREATEST(block_counts.row_count - 1, 0)), 0) AS duplicate_rows,
+            $1::bigint + 1 AS expected_blocks,
+            block_counts.populated_heights,
+            ($1::bigint + 1) - block_counts.populated_heights AS missing_heights,
+            0 AS duplicate_rows,
             unavailable.unavailable_heights
-        FROM expected
-        LEFT JOIN block_counts ON block_counts.height = expected.height
+        FROM block_counts
         CROSS JOIN unavailable
-        GROUP BY unavailable.unavailable_heights
     )sql");
     const auto result{w.exec_prepared("EnterpriseBlockTableCoverage", chain_tip_height, Network())};
     if (!result.empty()) {
