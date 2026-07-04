@@ -42,6 +42,16 @@ EnterpriseIndex::EnterpriseIndex(std::unique_ptr<interfaces::Chain> chain, size_
       m_db{std::make_unique<BaseIndex::DB>(gArgs.GetDataDirNet() / "indexes" / "enterpriseindex" / "db", n_cache_size, f_memory, f_wipe)},
       m_spool{gArgs.GetDataDirNet() / "enterprise" / "block_spool"}
 {
+    if (f_wipe) {
+        const std::vector<fs::path> stale_spool{m_spool.Pending()};
+        if (!stale_spool.empty()) {
+            LogInfo("enterprise: removing %u stale block spool files for -reindex replay", stale_spool.size());
+            if (!m_spool.RemoveMany(stale_spool)) {
+                LogError("enterprise: failed to remove stale block spool files for -reindex replay");
+            }
+        }
+    }
+
     const int64_t spool_max_mib{std::max<int64_t>(0, gArgs.GetIntArg("-enterprisespoolmax", DEFAULT_ENTERPRISE_SPOOL_MAX_MIB))};
     m_spool_max_bytes = static_cast<uint64_t>(spool_max_mib) * 1024 * 1024;
 }
@@ -383,7 +393,7 @@ bool EnterpriseIndex::ReconcileGaps()
             queued = true;
             continue;
         }
-        enterprise::MarkGapUnavailable(height, pindex->GetBlockHash(), "local", "block delta not available locally; rewind or reindex chainstate to replay the enterprise index");
+        enterprise::MarkGapUnavailable(height, pindex->GetBlockHash(), "local", "block delta not available locally; rewind or run full -reindex to replay the enterprise index");
     }
     if (!queued) {
         m_next_gap_scan = now + 60s;
