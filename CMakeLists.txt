@@ -241,7 +241,54 @@ endif()
 
 if(WITH_ENTERPRISE_SQL)
   find_package(LibPQXX MODULE REQUIRED)
-  find_package(ZLIB)
+  find_package(ZLIB REQUIRED)
+
+  if(LibPQXX_VERSION VERSION_LESS 7.9)
+    # libpqxx 7.8 makes std::source_location part of its ABI when the library
+    # itself is built as C++20. Some distributions (including Ubuntu 24.04)
+    # build it as C++17, while this project consumes the headers as C++20.
+    # Probe the installed library instead of assuming that every 7.8 package
+    # uses the same ABI.
+    include(CheckCXXSourceCompiles)
+    include(CMakePushCheckState)
+    cmake_push_check_state(RESET)
+    get_target_property(LIBPQXX_CHECK_TARGET LibPQXX::pqxx ALIASED_TARGET)
+    if(NOT LIBPQXX_CHECK_TARGET)
+      set(LIBPQXX_CHECK_TARGET LibPQXX::pqxx)
+    endif()
+    set(CMAKE_REQUIRED_LIBRARIES ${LIBPQXX_CHECK_TARGET})
+    unset(LIBPQXX_HAS_SOURCE_LOCATION_ABI CACHE)
+    check_cxx_source_compiles([=[
+      #include <version>
+      #include <pqxx/except>
+      int main()
+      {
+        pqxx::failure error{"libpqxx ABI probe"};
+        return error.what()[0] == 0;
+      }
+    ]=] LIBPQXX_HAS_SOURCE_LOCATION_ABI)
+
+    if(NOT LIBPQXX_HAS_SOURCE_LOCATION_ABI)
+      unset(LIBPQXX_HAS_LEGACY_EXCEPTION_ABI CACHE)
+      check_cxx_source_compiles([=[
+        #include <version>
+        #undef __cpp_lib_source_location
+        #include <pqxx/except>
+        int main()
+        {
+          pqxx::failure error{"libpqxx ABI probe"};
+          return error.what()[0] == 0;
+        }
+      ]=] LIBPQXX_HAS_LEGACY_EXCEPTION_ABI)
+      if(NOT LIBPQXX_HAS_LEGACY_EXCEPTION_ABI)
+        message(FATAL_ERROR "Unable to determine the libpqxx 7.8 exception ABI")
+      endif()
+      set(LIBPQXX_DISABLE_SOURCE_LOCATION TRUE)
+      message(STATUS "Using the libpqxx 7.8 C++17 exception ABI")
+    endif()
+    unset(LIBPQXX_CHECK_TARGET)
+    cmake_pop_check_state()
+  endif()
 endif()
 
 if(ENABLE_IPC AND WITH_EXTERNAL_LIBMULTIPROCESS)

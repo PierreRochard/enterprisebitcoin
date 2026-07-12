@@ -6,12 +6,20 @@
     "boost-multi-index"
   ],
   "default-features": [
+    "enterprise-sql",
     "qt",
     "tests",
     "wallet",
     "zeromq"
   ],
   "features": {
+    "enterprise-sql": {
+      "description": "Enable Enterprise Bitcoin PostgreSQL export hooks",
+      "dependencies": [
+        "libpqxx",
+        "zlib"
+      ]
+    },
     "qt": {
       "description": "Build GUI, Qt 6",
       "dependencies": [

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -250,8 +251,8 @@ inline namespace dotenv {
 
     private:
         char token;
-        uint row_count;
-        uint col_count;
+        std::size_t row_count;
+        std::size_t col_count;
         bool bond = false;
         std::string* binded = nullptr;
         std::string _key;
@@ -341,7 +342,7 @@ inline namespace dotenv {
 
             try {
                 return _env.at(k);
-            } catch (const std::out_of_range& exception) {
+            } catch (const std::out_of_range&) {
                 throw std::out_of_range("key '" + k + "' not found");
             }
         }
@@ -372,7 +373,7 @@ inline namespace dotenv {
     inline const std::string dotenv::env_filename = ".env";
     inline const std::string dotenv::config_err = "config() method must be called first";
     inline dotenv dotenv::_instance;
-    inline dotenv& env = dotenv::instance().config();
+    inline dotenv& env = dotenv::instance();
 
 } // namespace dotenv
 

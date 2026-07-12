@@ -1,13 +1,13 @@
 #include <enterprise/mempool_to_sql.h>
 #include <enterprise/network.h>
 #include <enterprise/pg_config.h>
+#include <enterprise/pqxx_compat.h>
 
 #include <common/args.h>
 #include <kernel/mempool_removal_reason.h>
 #include <util/time.h>
 
 #include <chrono>
-#include <pqxx/pqxx>
 #include <string>
 
 namespace {
@@ -32,7 +32,8 @@ RemoveMempoolEntry::RemoveMempoolEntry(const Txid& hash, MemPoolRemovalReason re
                                     "removal_time = to_timestamp($2), "
                                     "network = $3 "
                                     "WHERE txid = $4;");
-    w.exec_prepared(
+    enterprise::ExecPrepared(
+        w,
         "UpdateMempoolEntry",
         RemovalReasonToString(reason),
         GetTime<std::chrono::seconds>().count(),
@@ -104,7 +105,8 @@ MempoolEntryToSql::MempoolEntryToSql(const CTxMemPoolEntry& mempool_entry)
                                     ") ON CONFLICT (txid) DO NOTHING;");
 
     const LockPoints& lock_points{mempool_entry.GetLockPoints()};
-    w.exec_prepared(
+    enterprise::ExecPrepared(
+        w,
         "InsertMempoolEntry",
         mempool_entry.GetTx().GetHash().GetHex(),
         ChainToString(),

@@ -10,6 +10,27 @@ Finds the libpqxx C++ client library for PostgreSQL.
 
 #]=======================================================================]
 
+# Native vcpkg builds expose libpqxx through its CMake package and do not
+# install a pkg-config file on Windows. Prefer that package whenever a vcpkg
+# triplet is active, while retaining pkg-config discovery for system packages.
+if(VCPKG_TARGET_TRIPLET)
+  find_package(libpqxx CONFIG REQUIRED)
+
+  if(NOT TARGET LibPQXX::pqxx)
+    if(TARGET libpqxx::pqxx)
+      add_library(LibPQXX::pqxx ALIAS libpqxx::pqxx)
+    elseif(TARGET pqxx)
+      add_library(LibPQXX::pqxx ALIAS pqxx)
+    else()
+      message(FATAL_ERROR "The libpqxx package did not provide a supported CMake target")
+    endif()
+  endif()
+
+  set(LibPQXX_VERSION "${libpqxx_VERSION}")
+  set(LibPQXX_FOUND TRUE)
+  return()
+endif()
+
 find_package(PkgConfig REQUIRED)
 
 if(APPLE)
@@ -52,6 +73,7 @@ find_package_handle_standard_args(LibPQXX
   REQUIRED_VARS libpqxx_LIBRARY_DIRS
   VERSION_VAR libpqxx_VERSION
 )
+set(LibPQXX_VERSION "${libpqxx_VERSION}")
 
 if(LibPQXX_FOUND AND NOT TARGET LibPQXX::pqxx)
   add_library(LibPQXX::pqxx ALIAS PkgConfig::libpqxx)

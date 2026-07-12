@@ -19,6 +19,7 @@ RUN apt-get update \
        pkg-config \
        python3 \
        systemtap-sdt-dev \
+       zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /enterprisebitcoin
@@ -27,6 +28,7 @@ COPY . .
 RUN cmake -S . -B build -GNinja \
       -DBUILD_GUI=OFF \
       -DENABLE_WALLET=OFF \
+      -DENABLE_IPC=OFF \
       -DWITH_ENTERPRISE_SQL=ON \
       -DWITH_ZMQ=OFF \
     && cmake --build build --target bitcoind

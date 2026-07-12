@@ -6,6 +6,7 @@
 #include <common/system.h>
 #include <core_io.h>
 #include <enterprise/pg_config.h>
+#include <enterprise/pqxx_compat.h>
 #include <enterprise/utilities.h>
 #include <enterprise/utxo_set_to_sql.h>
 #include <index/txindex.h>
@@ -28,7 +29,6 @@
 #include <string>
 #include <tuple>
 #include <vector>
-#include <pqxx/pqxx>
 
 std::map<int, double> calculatePercentiles(std::vector<double>& data) {
     std::map<int, double> percentiles;

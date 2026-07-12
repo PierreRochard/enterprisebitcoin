@@ -11,6 +11,7 @@
 #include <txmempool.h>
 #include <uint256.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -24,7 +25,7 @@ struct FeeData {
 };
 
 struct TransactionData {
-    const int &m_transaction_index;
+    std::size_t m_transaction_index;
     const CTransactionRef &m_transaction;
 
     CAmount total_output_value = 0;
@@ -37,7 +38,7 @@ struct TransactionData {
     std::string transaction_hash;
     bool is_coinbase;
 
-    TransactionData(const int &transaction_index, const CTransactionRef &transaction);
+    TransactionData(std::size_t transaction_index, const CTransactionRef &transaction);
 
     CAmount GetFee() {
         return is_coinbase ? 0 : total_input_value - total_output_value;
