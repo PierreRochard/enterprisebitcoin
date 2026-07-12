@@ -25,6 +25,7 @@
 #ifdef ENABLE_ENTERPRISE_SQL
 #include <enterprise/enterprise_index.h>
 #include <enterprise/options.h>
+#include <enterprise/pg_config.h>
 #endif
 #include <httprpc.h>
 #include <httpserver.h>
@@ -118,6 +119,7 @@
 #include <fstream>
 #include <functional>
 #include <initializer_list>
+#include <limits>
 #include <list>
 #include <memory>
 #include <new>
@@ -535,8 +537,10 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-coinstatsindex", strprintf("Maintain coinstats index used by the gettxoutsetinfo RPC (default: %u)", DEFAULT_COINSTATSINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #ifdef ENABLE_ENTERPRISE_SQL
     argsman.AddArg("-enterpriseindex", strprintf("Maintain enterprise block spool and async Postgres writer. Supports pruned nodes by durably capturing block+undo deltas before block files are deleted. When enabled without an explicit -prune setting, defaults to -prune=%u MiB (default: %u)", DEFAULT_ENTERPRISE_PRUNE_TARGET_MIB, DEFAULT_ENTERPRISEINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-enterprisebackfillheight=<height>", strprintf("Update only denomination and price fields on matching historical PostgreSQL block rows through <height>. Rows already using the current classifier are skipped. Set to -1 to disable (default: %d)", DEFAULT_ENTERPRISE_BACKFILL_HEIGHT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-enterprisemempoolexport", strprintf("Export mempool add/remove events synchronously to PostgreSQL. Disabled by default so a PostgreSQL outage cannot stall mempool mutation paths (default: %u)", DEFAULT_ENTERPRISE_MEMPOOL_EXPORT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-enterprisespoolmax=<MiB>", strprintf("Maximum durable enterprise block spool size before validation waits for the Postgres writer. Set to 0 to disable backpressure (default: %u)", DEFAULT_ENTERPRISE_SPOOL_MAX_MIB), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    argsman.AddArg("-enterpriseconfig=<file>", "Read enterprise PostgreSQL connection settings from this dotenv-style file. Relative paths are resolved under the network datadir. When unset, <datadir>/<chain>/enterprise.env overrides any .env file in the working directory. Environment variables PGDB, PGUSER, PGPASSWORD, PGHOST, and PGPORT override file values.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-enterpriseconfig=<file>", "Read enterprise PostgreSQL connection settings exclusively from this KEY=VALUE file. Relative paths are resolved under the network datadir. When unset, <datadir>/<chain>/enterprise.env overrides .env in the working directory, and PGDB, PGUSER, PGPASSWORD, PGHOST, and PGPORT environment variables override those implicit files.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #endif
     argsman.AddArg("-conf=<file>", strprintf("Specify path to read-only configuration file. Relative paths will be prefixed by datadir location (only useable from command line, not configuration file) (default: %s)", BITCOIN_CONF_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-datadir=<dir>", "Specify data directory", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
@@ -1041,6 +1045,31 @@ bool AppInitParameterInteraction(const ArgsManager& args)
         args.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX) && !args.IsArgSet("-prune") ? true :
 #endif
         args.GetIntArg("-prune", 0) != 0};
+#ifdef ENABLE_ENTERPRISE_SQL
+    const int64_t enterprise_backfill_height{
+        args.GetIntArg("-enterprisebackfillheight", DEFAULT_ENTERPRISE_BACKFILL_HEIGHT)};
+    if (enterprise_backfill_height < DEFAULT_ENTERPRISE_BACKFILL_HEIGHT ||
+        enterprise_backfill_height > std::numeric_limits<int>::max()) {
+        return InitError(strprintf(
+            _("-enterprisebackfillheight must be -1 (disabled) or a height from 0 through %d."),
+            std::numeric_limits<int>::max()));
+    }
+    if (enterprise_backfill_height >= 0 && !args.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX)) {
+        return InitError(_("-enterprisebackfillheight requires -enterpriseindex=1."));
+    }
+    if (args.GetBoolArg("-enterprisemempoolexport", DEFAULT_ENTERPRISE_MEMPOOL_EXPORT) &&
+        !args.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX)) {
+        return InitError(_("-enterprisemempoolexport requires -enterpriseindex=1."));
+    }
+    if (args.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX)) {
+        try {
+            enterprise::SanitizePgRoutingEnvironment();
+        } catch (const std::exception& e) {
+            return InitError(Untranslated(strprintf(
+                "Unable to sanitize enterprise PostgreSQL routing environment: %s", e.what())));
+        }
+    }
+#endif
     if (prune_enabled) {
         if (args.GetBoolArg("-txindex", DEFAULT_TXINDEX))
             return InitError(_("Prune mode is incompatible with -txindex."));

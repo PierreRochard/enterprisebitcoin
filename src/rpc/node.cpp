@@ -6,6 +6,9 @@
 #include <bitcoin-build-config.h> // IWYU pragma: keep
 
 #include <chainparams.h>
+#ifdef ENABLE_ENTERPRISE_SQL
+#include <enterprise/enterprise_index.h>
+#endif
 #include <httpserver.h>
 #include <index/blockfilterindex.h>
 #include <index/coinstatsindex.h>
@@ -392,6 +395,12 @@ static RPCMethod getindexinfo()
     if (g_coin_stats_index) {
         result.pushKVs(SummaryToJSON(g_coin_stats_index->GetSummary(), index_name));
     }
+
+#ifdef ENABLE_ENTERPRISE_SQL
+    if (g_enterprise_index) {
+        result.pushKVs(SummaryToJSON(g_enterprise_index->GetSummary(), index_name));
+    }
+#endif
 
     if (g_txospenderindex) {
         result.pushKVs(SummaryToJSON(g_txospenderindex->GetSummary(), index_name));

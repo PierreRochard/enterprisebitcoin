@@ -12,7 +12,9 @@
 #include <consensus/tx_verify.h>
 #include <consensus/validation.h>
 #ifdef ENABLE_ENTERPRISE_SQL
+#include <common/args.h>
 #include <enterprise/mempool_to_sql.h>
+#include <enterprise/options.h>
 #endif
 #include <policy/policy.h>
 #include <policy/settings.h>
@@ -31,6 +33,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <numeric>
 #include <optional>
 #include <ranges>
@@ -263,7 +266,14 @@ void CTxMemPool::addNewTransaction(CTxMemPool::txiter newit)
     );
 
 #ifdef ENABLE_ENTERPRISE_SQL
-    MempoolEntryToSql mempool_entry_to_sql{entry};
+    if (gArgs.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX) &&
+        gArgs.GetBoolArg("-enterprisemempoolexport", DEFAULT_ENTERPRISE_MEMPOOL_EXPORT)) {
+        try {
+            MempoolEntryToSql mempool_entry_to_sql{entry};
+        } catch (const std::exception& e) {
+            LogWarning("enterprise: failed to export mempool entry %s: %s", entry.GetTx().GetHash().GetHex(), e.what());
+        }
+    }
 #endif
 }
 
@@ -289,7 +299,14 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
     );
 
 #ifdef ENABLE_ENTERPRISE_SQL
-    RemoveMempoolEntry remove_mempool_entry{it->GetTx().GetHash(), reason};
+    if (gArgs.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX) &&
+        gArgs.GetBoolArg("-enterprisemempoolexport", DEFAULT_ENTERPRISE_MEMPOOL_EXPORT)) {
+        try {
+            RemoveMempoolEntry remove_mempool_entry{it->GetTx().GetHash(), reason};
+        } catch (const std::exception& e) {
+            LogWarning("enterprise: failed to mark mempool removal for %s: %s", it->GetTx().GetHash().GetHex(), e.what());
+        }
+    }
 #endif
 
     for (const CTxIn& txin : it->GetTx().vin)

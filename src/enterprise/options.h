@@ -6,8 +6,10 @@
 #include <cstdint>
 
 static constexpr bool DEFAULT_ENTERPRISEINDEX{false};
+static constexpr bool DEFAULT_ENTERPRISE_MEMPOOL_EXPORT{false};
 static constexpr int64_t DEFAULT_ENTERPRISE_PRUNE_TARGET_MIB{20000};
 static constexpr int64_t DEFAULT_ENTERPRISE_SPOOL_MAX_MIB{1024};
+static constexpr int64_t DEFAULT_ENTERPRISE_BACKFILL_HEIGHT{-1};
 static constexpr int DEFAULT_ENTERPRISE_GAP_BATCH_SIZE{256};
 
 #endif // BITCOIN_ENTERPRISE_OPTIONS_H

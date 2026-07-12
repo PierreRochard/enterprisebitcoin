@@ -1,37 +1,42 @@
+#include <enterprise/block_to_sql.h>
+
 #include <chain.h>
 #include <chainparams.h>
-#include <consensus/amount.h>
-#include <consensus/validation.h>
 #include <common/args.h>
 #include <common/system.h>
+#include <consensus/amount.h>
+#include <consensus/validation.h>
 #include <core_io.h>
-#include <enterprise/block_to_sql.h>
 #include <enterprise/denomination_classifier.h>
 #include <enterprise/network.h>
+#include <enterprise/options.h>
 #include <enterprise/pg.h>
 #include <enterprise/pg_config.h>
+#include <enterprise/pqxx_compat.h>
 #include <enterprise/utilities.h>
 #include <index/txindex.h>
 #include <key_io.h>
 #include <logging.h>
 #include <node/transaction.h>
-#include <pubkey.h>
 #include <primitives/block.h>
+#include <pubkey.h>
 #include <rpc/blockchain.h>
 #include <script/interpreter.h>
 #include <script/solver.h>
 #include <serialize.h>
 #include <txmempool.h>
 #include <undo.h>
-#include <util/check.h>
 #include <util/chaintype.h>
+#include <util/check.h>
+#include <util/time.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <iomanip>
 #include <map>
+#include <mutex>
 #include <optional>
-#include <pqxx/pqxx>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -39,13 +44,43 @@
 
 namespace {
 
+enum class BlockWriteMode {
+    SKIP,
+    UPDATE_DENOMINATION,
+    INSERT_OR_REPLACE,
+};
+
 std::string ChainToString() {
     return EnterpriseChainToString(gArgs.GetChainType());
 }
 
-pqxx::connection ConnectEnterprisePg()
+BlockWriteMode GetBlockWriteMode(
+    enterprise::PgSession& session,
+    pqxx::work& w,
+    const std::string& network,
+    int height,
+    const uint256& hash)
 {
-    return pqxx::connection{enterprise::PgConnectionString()};
+    session.Prepare("EnterpriseBlockWriteMode", R"sql(
+        SELECT hash, denomination_classifier_version
+        FROM blocks
+        WHERE network = $1
+          AND height = $2
+    )sql");
+    const auto result{enterprise::ExecPrepared(w, "EnterpriseBlockWriteMode", network, height)};
+    if (result.empty()) return BlockWriteMode::INSERT_OR_REPLACE;
+
+    const auto row{result.front()};
+    if (row[0].as<std::string>() != hash.GetHex()) return BlockWriteMode::INSERT_OR_REPLACE;
+
+    const int64_t backfill_height{
+        gArgs.GetIntArg("-enterprisebackfillheight", DEFAULT_ENTERPRISE_BACKFILL_HEIGHT)};
+    const bool classifier_current{
+        !row[1].is_null() && row[1].as<std::string>() == enterprise::DENOMINATION_CLASSIFIER_VERSION};
+    if (backfill_height >= 0 && height <= backfill_height && !classifier_current) {
+        return BlockWriteMode::UPDATE_DENOMINATION;
+    }
+    return BlockWriteMode::SKIP;
 }
 
 struct DenominationBlockStats {
@@ -77,17 +112,61 @@ std::string DoubleSqlParam(double value)
     return stream.str();
 }
 
-std::optional<enterprise::DenominationPriceWindow> LoadDenominationPriceWindow(
-    pqxx::connection& c,
-    pqxx::work& w,
-    int64_t block_time)
+enum class PricesDayType {
+    DATE,
+    TIMESTAMP_WITH_TIME_ZONE,
+    TIMESTAMP_WITHOUT_TIME_ZONE,
+};
+
+struct PricesMetadata {
+    bool has_low{false};
+    bool has_high{false};
+    bool has_source{false};
+    PricesDayType day_type{PricesDayType::DATE};
+};
+
+struct PriceObservation {
+    std::optional<enterprise::DenominationPriceWindow> window;
+    int64_t timestamp_us{0};
+};
+
+struct PriceCacheState {
+    std::mutex mutex;
+    std::optional<PricesMetadata> metadata;
+    std::map<int64_t, std::vector<PriceObservation>> historical_days;
+};
+
+PriceCacheState& PriceCache()
 {
-    c.prepare("EnterprisePricesColumns", R"sql(
+    static PriceCacheState cache;
+    return cache;
+}
+
+constexpr int64_t SECONDS_PER_DAY{24 * 60 * 60};
+
+int64_t UtcDay(int64_t timestamp)
+{
+    const int64_t day{timestamp / SECONDS_PER_DAY};
+    return timestamp < 0 && timestamp % SECONDS_PER_DAY != 0 ? day - 1 : day;
+}
+
+int64_t CurrentUtcDay()
+{
+    return UtcDay(TicksSinceEpoch<std::chrono::seconds>(SystemClock::now()));
+}
+
+PricesMetadata LoadPricesMetadata(enterprise::PgSession& session, pqxx::work& w)
+{
+    PriceCacheState& cache{PriceCache()};
+    std::lock_guard<std::mutex> lock{cache.mutex};
+    if (cache.metadata) return *cache.metadata;
+
+    session.Prepare("EnterprisePricesColumns", R"sql(
         SELECT
             EXISTS (
                 SELECT 1
                 FROM pg_attribute
-                WHERE attrelid = 'prices'::regclass
+                WHERE attrelid = 'public.prices'::regclass
                   AND attname = 'price_low'
                   AND attnum > 0
                   AND NOT attisdropped
@@ -95,7 +174,7 @@ std::optional<enterprise::DenominationPriceWindow> LoadDenominationPriceWindow(
             EXISTS (
                 SELECT 1
                 FROM pg_attribute
-                WHERE attrelid = 'prices'::regclass
+                WHERE attrelid = 'public.prices'::regclass
                   AND attname = 'price_high'
                   AND attnum > 0
                   AND NOT attisdropped
@@ -103,7 +182,7 @@ std::optional<enterprise::DenominationPriceWindow> LoadDenominationPriceWindow(
             EXISTS (
                 SELECT 1
                 FROM pg_attribute
-                WHERE attrelid = 'prices'::regclass
+                WHERE attrelid = 'public.prices'::regclass
                   AND attname = 'price_source'
                   AND attnum > 0
                   AND NOT attisdropped
@@ -111,42 +190,42 @@ std::optional<enterprise::DenominationPriceWindow> LoadDenominationPriceWindow(
             (
                 SELECT atttypid::regtype::text
                 FROM pg_attribute
-                WHERE attrelid = 'prices'::regclass
+                WHERE attrelid = 'public.prices'::regclass
                   AND attname = 'day'
                   AND attnum > 0
                   AND NOT attisdropped
             )
     )sql");
-    const pqxx::result column_result{w.exec_prepared("EnterprisePricesColumns")};
-    const bool has_low{!column_result.empty() && column_result.front()[0].as<bool>()};
-    const bool has_high{!column_result.empty() && column_result.front()[1].as<bool>()};
-    const bool has_source{!column_result.empty() && column_result.front()[2].as<bool>()};
-    const std::string day_type{column_result.empty() || column_result.front()[3].is_null()
-                                   ? ""
-                                   : column_result.front()[3].as<std::string>()};
-
-    std::string sql{"SELECT price, "};
-    sql += has_low ? "price_low" : "NULL::double precision";
-    sql += ", ";
-    sql += has_high ? "price_high" : "NULL::double precision";
-    sql += ", ";
-    sql += has_source ? "price_source" : "NULL::text";
-    sql += "\n        FROM prices\n        WHERE ";
-    if (day_type == "timestamp with time zone") {
-        sql += "(day AT TIME ZONE 'UTC')::date = (to_timestamp($1) AT TIME ZONE 'UTC')::date\n";
-        sql += "        ORDER BY ABS(EXTRACT(EPOCH FROM (day - to_timestamp($1))))\n";
-    } else if (day_type == "timestamp without time zone") {
-        sql += "day::date = (to_timestamp($1) AT TIME ZONE 'UTC')::date\n";
-        sql += "        ORDER BY ABS(EXTRACT(EPOCH FROM (day - (to_timestamp($1) AT TIME ZONE 'UTC'))))\n";
-    } else {
-        sql += "day = (to_timestamp($1) AT TIME ZONE 'UTC')::date\n";
+    const pqxx::result result{enterprise::ExecPrepared(w, "EnterprisePricesColumns")};
+    if (result.empty() || result.front()[3].is_null()) {
+        throw std::runtime_error("public.prices.day metadata is unavailable");
     }
-    sql += "        LIMIT 1";
-    c.prepare("EnterpriseBlockPriceWindow", sql);
-    const pqxx::result result{w.exec_prepared("EnterpriseBlockPriceWindow", block_time)};
-    if (result.empty()) return std::nullopt;
 
-    const auto row{result.front()};
+    const std::string day_type{result.front()[3].as<std::string>()};
+    PricesDayType parsed_day_type;
+    if (day_type == "date") {
+        parsed_day_type = PricesDayType::DATE;
+    } else if (day_type == "timestamp with time zone") {
+        parsed_day_type = PricesDayType::TIMESTAMP_WITH_TIME_ZONE;
+    } else if (day_type == "timestamp without time zone") {
+        parsed_day_type = PricesDayType::TIMESTAMP_WITHOUT_TIME_ZONE;
+    } else {
+        throw std::runtime_error("public.prices.day has unsupported type " + day_type);
+    }
+
+    cache.metadata = PricesMetadata{
+        .has_low = result.front()[0].as<bool>(),
+        .has_high = result.front()[1].as<bool>(),
+        .has_source = result.front()[2].as<bool>(),
+        .day_type = parsed_day_type,
+    };
+    return *cache.metadata;
+}
+
+std::optional<enterprise::DenominationPriceWindow> ParsePriceWindow(const pqxx::row& row)
+{
+    if (row[0].is_null()) return std::nullopt;
+
     const double price{row[0].as<double>()};
     const bool use_fallback_window{row[1].is_null() || row[2].is_null()};
     enterprise::DenominationPriceWindow window{
@@ -155,8 +234,91 @@ std::optional<enterprise::DenominationPriceWindow> LoadDenominationPriceWindow(
         .high = use_fallback_window ? price * 1.025 : row[2].as<double>(),
         .source = use_fallback_window ? "prices.price:fallback_2_5pct" : (row[3].is_null() ? "prices" : row[3].as<std::string>()),
     };
-    if (!window.Valid()) return std::nullopt;
+    const bool zero_window{window.price == 0.0 && window.low == 0.0 && window.high == 0.0};
+    if (!zero_window && !window.Valid()) return std::nullopt;
     return window;
+}
+
+std::optional<enterprise::DenominationPriceWindow> SelectPriceWindow(
+    const std::vector<PriceObservation>& observations,
+    PricesDayType day_type,
+    int64_t block_time)
+{
+    if (observations.empty()) return std::nullopt;
+    if (day_type == PricesDayType::DATE) return observations.front().window;
+
+    const long double block_time_us{static_cast<long double>(block_time) * 1'000'000.0L};
+    const auto closest{std::min_element(
+        observations.begin(),
+        observations.end(),
+        [block_time_us](const PriceObservation& left, const PriceObservation& right) {
+            return std::abs(static_cast<long double>(left.timestamp_us) - block_time_us) <
+                   std::abs(static_cast<long double>(right.timestamp_us) - block_time_us);
+        })};
+    return closest->window;
+}
+
+std::optional<enterprise::DenominationPriceWindow> LoadDenominationPriceWindow(
+    enterprise::PgSession& session,
+    pqxx::work& w,
+    int64_t block_time)
+{
+    const PricesMetadata metadata{LoadPricesMetadata(session, w)};
+    const int64_t utc_day{UtcDay(block_time)};
+    const bool cacheable{utc_day < CurrentUtcDay()};
+    if (cacheable) {
+        PriceCacheState& cache{PriceCache()};
+        std::lock_guard<std::mutex> lock{cache.mutex};
+        const auto cached{cache.historical_days.find(utc_day)};
+        if (cached != cache.historical_days.end()) {
+            return SelectPriceWindow(cached->second, metadata.day_type, block_time);
+        }
+    }
+
+    std::string sql{"SELECT price, "};
+    sql += metadata.has_low ? "price_low" : "NULL::double precision";
+    sql += ", ";
+    sql += metadata.has_high ? "price_high" : "NULL::double precision";
+    sql += ", ";
+    sql += metadata.has_source ? "price_source" : "NULL::text";
+    if (metadata.day_type == PricesDayType::TIMESTAMP_WITH_TIME_ZONE) {
+        sql += ", (EXTRACT(EPOCH FROM day) * 1000000)::bigint";
+    } else if (metadata.day_type == PricesDayType::TIMESTAMP_WITHOUT_TIME_ZONE) {
+        sql += ", (EXTRACT(EPOCH FROM (day AT TIME ZONE 'UTC')) * 1000000)::bigint";
+    } else {
+        sql += ", NULL::bigint";
+    }
+    sql += "\n        FROM public.prices\n        WHERE ";
+    if (metadata.day_type == PricesDayType::TIMESTAMP_WITH_TIME_ZONE) {
+        sql += "(day AT TIME ZONE 'UTC')::date = (to_timestamp($1) AT TIME ZONE 'UTC')::date\n";
+    } else if (metadata.day_type == PricesDayType::TIMESTAMP_WITHOUT_TIME_ZONE) {
+        sql += "day::date = (to_timestamp($1) AT TIME ZONE 'UTC')::date\n";
+    } else {
+        sql += "day = (to_timestamp($1) AT TIME ZONE 'UTC')::date\n";
+    }
+    sql += "        ORDER BY day";
+    session.Prepare("EnterpriseBlockPriceDay", sql);
+    const pqxx::result result{enterprise::ExecPrepared(w, "EnterpriseBlockPriceDay", block_time)};
+
+    std::vector<PriceObservation> observations;
+    observations.reserve(result.size());
+    bool all_windows_usable{true};
+    for (const pqxx::row& row : result) {
+        std::optional<enterprise::DenominationPriceWindow> window{ParsePriceWindow(row)};
+        all_windows_usable &= window.has_value();
+        observations.push_back(PriceObservation{
+            .window = std::move(window),
+            .timestamp_us = row[4].is_null() ? 0 : row[4].as<int64_t>(),
+        });
+    }
+
+    if (cacheable && !observations.empty() && all_windows_usable) {
+        PriceCacheState& cache{PriceCache()};
+        std::lock_guard<std::mutex> lock{cache.mutex};
+        const auto cached{cache.historical_days.try_emplace(utc_day, std::move(observations)).first};
+        return SelectPriceWindow(cached->second, metadata.day_type, block_time);
+    }
+    return SelectPriceWindow(observations, metadata.day_type, block_time);
 }
 
 void AddDenominationResult(
@@ -189,19 +351,172 @@ void AddDenominationResult(
     }
 }
 
+DenominationBlockStats CalculateDenominationBlockStats(
+    const CBlock& block,
+    const std::optional<enterprise::DenominationPriceWindow>& price_window)
+{
+    DenominationBlockStats stats;
+    for (const CTransactionRef& transaction : block.vtx) {
+        if (transaction->IsCoinBase()) continue;
+
+        bool has_confident_denomination{false};
+        std::size_t unknown_outputs{0};
+        CAmount single_unknown_value{0};
+        for (const CTxOut& output : transaction->vout) {
+            if (output.nValue <= 0 || output.scriptPubKey.IsUnspendable()) continue;
+
+            const enterprise::DenominationResult result{
+                enterprise::ClassifyOutputDenomination(output.nValue, price_window)};
+            AddDenominationResult(stats, output.nValue, result);
+            if (result.category == enterprise::DenominationCategory::USD ||
+                result.category == enterprise::DenominationCategory::SATS) {
+                has_confident_denomination = true;
+            } else if (result.category == enterprise::DenominationCategory::UNKNOWN) {
+                ++unknown_outputs;
+                single_unknown_value = output.nValue;
+            }
+        }
+        if (has_confident_denomination && unknown_outputs == 1) {
+            ++stats.likely_change_outputs_count;
+            stats.likely_change_value_sats += single_unknown_value;
+        }
+    }
+    return stats;
+}
+
+void UpdateBlockDenomination(
+    enterprise::PgSession& session,
+    pqxx::work& w,
+    const std::string& network,
+    int height,
+    const uint256& hash,
+    const std::optional<enterprise::DenominationPriceWindow>& price_window,
+    const DenominationBlockStats& stats)
+{
+    const std::string price{price_window ? DoubleSqlParam(price_window->price) : ""};
+    const std::string price_low{price_window ? DoubleSqlParam(price_window->low) : ""};
+    const std::string price_high{price_window ? DoubleSqlParam(price_window->high) : ""};
+    const std::string price_source{price_window ? price_window->source : ""};
+    session.Prepare("EnterpriseUpdateBlockDenomination", R"sql(
+        UPDATE blocks SET
+            btc_usd_price = NULLIF($1::text, '')::double precision,
+            btc_usd_price_low = NULLIF($2::text, '')::double precision,
+            btc_usd_price_high = NULLIF($3::text, '')::double precision,
+            btc_usd_price_source = NULLIF($4::text, ''),
+            denomination_eligible_outputs_count = $5,
+            denomination_eligible_value_sats = $6,
+            usd_denom_outputs_count = $7,
+            usd_denom_value_sats = $8,
+            usd_denom_confidence_sum = $9,
+            sats_denom_outputs_count = $10,
+            sats_denom_value_sats = $11,
+            sats_denom_confidence_sum = $12,
+            unknown_denom_outputs_count = $13,
+            unknown_denom_value_sats = $14,
+            ambiguous_denom_outputs_count = $15,
+            ambiguous_denom_value_sats = $16,
+            likely_change_outputs_count = $17,
+            likely_change_value_sats = $18,
+            denomination_classifier_version = $19
+        WHERE network = $20
+          AND height = $21
+          AND hash = $22
+          AND denomination_classifier_version IS DISTINCT FROM $19
+        RETURNING 1
+    )sql");
+    const auto updated{enterprise::ExecPrepared(
+        w,
+        "EnterpriseUpdateBlockDenomination",
+        price,
+        price_low,
+        price_high,
+        price_source,
+        stats.eligible_outputs_count,
+        stats.eligible_value_sats,
+        stats.usd_outputs_count,
+        stats.usd_value_sats,
+        stats.usd_confidence_sum,
+        stats.sats_outputs_count,
+        stats.sats_value_sats,
+        stats.sats_confidence_sum,
+        stats.unknown_outputs_count,
+        stats.unknown_value_sats,
+        stats.ambiguous_outputs_count,
+        stats.ambiguous_value_sats,
+        stats.likely_change_outputs_count,
+        stats.likely_change_value_sats,
+        enterprise::DENOMINATION_CLASSIFIER_VERSION,
+        network,
+        height,
+        hash.GetHex())};
+    if (updated.size() != 1) {
+        throw std::runtime_error("enterprise denomination backfill row changed while it was being classified");
+    }
+}
+
+bool HandleBoundedHistoricalBlock(
+    enterprise::PgSession& session,
+    pqxx::work& work,
+    const CBlockIndex& block_index,
+    const CBlock& block)
+{
+    const int64_t backfill_height{
+        gArgs.GetIntArg("-enterprisebackfillheight", DEFAULT_ENTERPRISE_BACKFILL_HEIGHT)};
+    if (backfill_height < 0 || block_index.nHeight > backfill_height) return false;
+
+    const BlockWriteMode write_mode{
+        GetBlockWriteMode(session, work, ChainToString(), block_index.nHeight, block.GetHash())};
+    if (write_mode == BlockWriteMode::INSERT_OR_REPLACE) return false;
+    if (write_mode == BlockWriteMode::SKIP) return true;
+
+    const std::optional<enterprise::DenominationPriceWindow> price_window{
+        LoadDenominationPriceWindow(session, work, block_index.GetBlockTime())};
+    const DenominationBlockStats stats{CalculateDenominationBlockStats(block, price_window)};
+    UpdateBlockDenomination(
+        session,
+        work,
+        ChainToString(),
+        block_index.nHeight,
+        block.GetHash(),
+        price_window,
+        stats);
+    return true;
+}
+
 } // namespace
 
 void DeleteBlockFromSql(const uint256& hash)
 {
-    pqxx::connection c{ConnectEnterprisePg()};
-    pqxx::work w{c};
-    c.prepare("DeleteBlock", "DELETE FROM blocks WHERE hash = $1;");
-    w.exec_prepared("DeleteBlock", hash.GetHex());
-    w.commit();
+    enterprise::PgSession session;
+    pqxx::work work{session.Connection()};
+    DeleteBlockFromSql(session, work, hash);
+    work.commit();
+}
+
+void DeleteBlockFromSql(enterprise::PgSession& session, pqxx::work& work, const uint256& hash)
+{
+    session.Prepare("EnterpriseDeleteDisconnectedBlock", "DELETE FROM blocks WHERE hash = $1;");
+    enterprise::ExecPrepared(work, "EnterpriseDeleteDisconnectedBlock", hash.GetHex());
 }
 
 BlockToSql::BlockToSql(const CBlockIndex* block_index, const CBlock& block, const CBlockUndo& undo, script_verify_flags flags)
 {
+    enterprise::PgSession session;
+    pqxx::work work{session.Connection()};
+    BlockToSql writer{session, work, block_index, block, undo, flags};
+    work.commit();
+}
+
+BlockToSql::BlockToSql(
+    enterprise::PgSession& session,
+    pqxx::work& w,
+    const CBlockIndex* block_index,
+    const CBlock& block,
+    const CBlockUndo& undo,
+    script_verify_flags flags)
+{
+    if (HandleBoundedHistoricalBlock(session, w, *block_index, block)) return;
+
     CCoinsViewCache view{&CoinsViewEmpty::Get(), /*deterministic=*/true};
 
     if (block.vtx.size() > 1 && undo.vtxundo.size() != block.vtx.size() - 1) {
@@ -219,20 +534,48 @@ BlockToSql::BlockToSql(const CBlockIndex* block_index, const CBlock& block, cons
         }
     }
 
-    BlockToSql writer{block_index, block, view, flags, /*cursor=*/nullptr};
+    BlockToSql writer{session, w, block_index, block, view, flags, /*cursor=*/nullptr};
 }
 
 
-BlockToSql::BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, script_verify_flags flags,
-                       CCoinsViewCursor *cursor) {
+BlockToSql::BlockToSql(const CBlockIndex* block_index, const CBlock& block, CCoinsViewCache& view, script_verify_flags flags,
+                       CCoinsViewCursor* cursor)
+{
+    enterprise::PgSession session;
+    pqxx::work work{session.Connection()};
+    BlockToSql writer{session, work, block_index, block, view, flags, cursor};
+    work.commit();
+}
+
+BlockToSql::BlockToSql(
+    enterprise::PgSession& session,
+    pqxx::work& work,
+    const CBlockIndex* block_index,
+    const CBlock& block,
+    CCoinsViewCache& view,
+    script_verify_flags flags,
+    CCoinsViewCursor* cursor)
+{
     static constexpr size_t PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
 
-    pqxx::connection c{ConnectEnterprisePg()};
-
-    pqxx::work w(c);
-    enterprise::EnsureEnterpriseTables(w);
+    const BlockWriteMode write_mode{
+        GetBlockWriteMode(session, work, ChainToString(), block_index->nHeight, block.GetHash())};
+    if (write_mode == BlockWriteMode::SKIP) return;
     const std::optional<enterprise::DenominationPriceWindow> denomination_price_window{
-        LoadDenominationPriceWindow(c, w, block_index->GetBlockTime())};
+        LoadDenominationPriceWindow(session, work, block_index->GetBlockTime())};
+    if (write_mode == BlockWriteMode::UPDATE_DENOMINATION) {
+        const DenominationBlockStats denomination_stats{
+            CalculateDenominationBlockStats(block, denomination_price_window)};
+        UpdateBlockDenomination(
+            session,
+            work,
+            ChainToString(),
+            block_index->nHeight,
+            block.GetHash(),
+            denomination_price_window,
+            denomination_stats);
+        return;
+    }
     const std::string btc_usd_price_param{denomination_price_window ? DoubleSqlParam(denomination_price_window->price) : ""};
     const std::string btc_usd_price_low_param{denomination_price_window ? DoubleSqlParam(denomination_price_window->low) : ""};
     const std::string btc_usd_price_high_param{denomination_price_window ? DoubleSqlParam(denomination_price_window->high) : ""};
@@ -705,355 +1048,358 @@ BlockToSql::BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoi
     input_script_types_string_stream << "]";
     output_script_types_string_stream << "]";
 
-    c.prepare("DeleteBlock", "DELETE FROM blocks WHERE hash = $1 OR (network = $2 AND height = $3);");
-    w.exec_prepared(
-            "DeleteBlock",
-            block.GetHash().GetHex(), // hash
-            ChainToString(),          // network
-            block_index->nHeight      // height
+    session.Prepare("EnterpriseDeleteConflictingBlock", "DELETE FROM blocks WHERE hash = $1 OR (network = $2 AND height = $3);");
+    enterprise::ExecPrepared(
+        work,
+        "EnterpriseDeleteConflictingBlock",
+        block.GetHash().GetHex(), // hash
+        ChainToString(),          // network
+        block_index->nHeight      // height
     );
 
-    c.prepare("InsertBlock", "INSERT INTO blocks "
-                             "("
-                             "hash, "
-                             "merkle_root, "
-                             "time, "
-
-                             "median_time, "
-                             "height, "
-                             "subsidy, "
-
-                             "transactions_count, "
-                             "version, "
-                             "status, "
-
-                             "bits, "
-                             "nonce, "
-                             "difficulty, "
-
-                             "chain_work, "
-                             "outputs_count, "
-                             "inputs_count, "
-
-                             "total_output_value, "
-                             "total_input_value, "
-                             "total_fees, "
-
-                             "total_size, "
-                             "total_vsize, "
-                             "total_weight, "
-
-                             "fee_rates, "
-                             "output_data, "
-                             "input_data, "
-
-                             "transaction_data, "
-                             "output_script_types, "
-                             "input_script_types, "
-
-                             "output_legacy_signature_operations, "
-                             "input_legacy_signature_operations, "
-                             "input_p2sh_signature_operations, "
-                             "input_witness_signature_operations, "
-
-                             "outputs_total_size, "
-                             "inputs_total_size, "
-                             "net_utxo_size_impact, "
-
-                             "hash_prev_block, "
-                             "network, "
-
-                             "nonstandard_create_count           , "
-                             "pubkey_create_count                , "
-                             "pubkeyhash_create_count            , "
-                             "scripthash_create_count            , "
-                             "multisig_create_count              , "
-                             "null_data_create_count             , "
-                             "witness_v0_keyhash_create_count    , "
-                             "witness_v0_scripthash_create_count , "
-                             "witness_v1_taproot_create_count    , "
-                             "witness_unknown_create_count       , "
-
-                             "nonstandard_spend_count            , "
-                             "pubkey_spend_count                 , "
-                             "pubkeyhash_spend_count             , "
-                             "scripthash_spend_count             , "
-                             "multisig_spend_count               , "
-                             "null_data_spend_count              , "
-                             "witness_v0_keyhash_spend_count     , "
-                             "witness_v0_scripthash_spend_count  , "
-                             "witness_v1_taproot_spend_count     , "
-                             "witness_unknown_spend_count        , "
-                             "coinbase , "
-
-                             "ordinals_weight , "
-                             "ordinals_count , "
-                             "ordinals_size , "
-                             "ordinals_vsize , "
-                             "ordinals_fees, "
-
-                             "non_ordinals_weight , "
-                             "non_ordinals_count , "
-                             "non_ordinals_size , "
-                             "non_ordinals_vsize , "
-                             "non_ordinals_fees, "
-
-                             "btc_usd_price, "
-                             "btc_usd_price_low, "
-                             "btc_usd_price_high, "
-                             "btc_usd_price_source, "
-                             "denomination_eligible_outputs_count, "
-                             "denomination_eligible_value_sats, "
-
-                             "usd_denom_outputs_count, "
-                             "usd_denom_value_sats, "
-                             "usd_denom_confidence_sum, "
-
-                             "sats_denom_outputs_count, "
-                             "sats_denom_value_sats, "
-                             "sats_denom_confidence_sum, "
-
-                             "unknown_denom_outputs_count, "
-                             "unknown_denom_value_sats, "
-
-                             "ambiguous_denom_outputs_count, "
-                             "ambiguous_denom_value_sats, "
-
-                             "likely_change_outputs_count, "
-                             "likely_change_value_sats, "
-
-                             "denomination_classifier_version"
-
-                             ") "
-
-                             "VALUES "
-                             "("
-                             "$1, " // hash
-                             "$2, " // merkle_root
-                             "to_timestamp($3), " // time
-
-                             "to_timestamp($4), " // median_time
-                             "$5, " // height
-                             "$6, " // subsidy
-
-                             "$7, " // transactions_count
-                             "$8, " // version
-                             "$9, " // status
-
-                             "$10, " // bits
-                             "$11, " // nonce
-                             "$12, " // difficulty
-
-                             "$13, " // chain_work
-                             "$14, " // outputs_count
-                             "$15, " // inputs_count
-
-                             "$16, " // total_output_value
-                             "$17, " // total_input_value
-                             "$18, " // total_fees
-
-                             "$19, " // total_size
-                             "$20, " // total_vsize
-                             "$21, " // total_weight
-
-                             "$22, " // fee_rates
-                             "$23, " // output_data
-                             "$24, " // input_data
-
-                             "$25, " // transaction_data
-                             "$26, " // output_script_types
-                             "$27, " // input_script_types
-
-                             "$28, " // output_legacy_signature_operations
-                             "$29, " // input_legacy_signature_operations
-                             "$30, " // input_p2sh_signature_operations
-                             "$31, " // input_witness_signature_operations
-
-                             "$32, " // outputs_total_size
-                             "$33, " // inputs_total_size
-                             "$34, " // net_utxo_size_impact
-
-                             "$35, " // hash_prev_block
-                             "$36, "   // network
-
-                             "$37, " // nonstandard_create_count
-                             "$38, " // pubkey_create_count
-                             "$39, " // pubkeyhash_create_count
-                             "$40, " // scripthash_create_count
-                             "$41, " // multisig_create_count
-                             "$42, " // null_data_create_count
-                             "$43, " // witness_v0_keyhash_create_count
-                             "$44, " // witness_v0_scripthash_create_count
-                             "$45, " // witness_v1_taproot_create_count
-                             "$46, " // witness_unknown_create_count
-
-                             "$47, " // nonstandard_spend_count
-                             "$48, " // pubkey_spend_count
-                             "$49, " // pubkeyhash_spend_count
-                             "$50, " // scripthash_spend_count
-                             "$51, " // multisig_spend_count
-                             "$52, " // null_data_spend_count
-                             "$53, " // witness_v0_keyhash_spend_count
-                             "$54, " // witness_v0_scripthash_spend_count
-                             "$55, " // witness_v1_taproot_spend_count
-                             "$56, " // witness_unknown_spend_count
-                             "$57, "  // coinbase
-
-                             "$58, "  // ordinals_weight
-                             "$59, "  // ordinals_count
-                             "$60, "  // ordinals_size
-                             "$61, "  // ordinals_vsize
-                             "$62, "  // ordinals_fees
-
-                             "$63, "  // non_ordinals_weight
-                             "$64, "  // non_ordinals_count
-                             "$65, "  // non_ordinals_size
-                             "$66, "  // non_ordinals_vsize
-                             "$67, "  // non_ordinals_fees
-
-                             "NULLIF($68::text, '')::double precision, " // btc_usd_price
-                             "NULLIF($69::text, '')::double precision, " // btc_usd_price_low
-                             "NULLIF($70::text, '')::double precision, " // btc_usd_price_high
-                             "NULLIF($71::text, ''), " // btc_usd_price_source
-                             "$72, " // denomination_eligible_outputs_count
-                             "$73, " // denomination_eligible_value_sats
-
-                             "$74, " // usd_denom_outputs_count
-                             "$75, " // usd_denom_value_sats
-                             "$76, " // usd_denom_confidence_sum
-
-                             "$77, " // sats_denom_outputs_count
-                             "$78, " // sats_denom_value_sats
-                             "$79, " // sats_denom_confidence_sum
-
-                             "$80, " // unknown_denom_outputs_count
-                             "$81, " // unknown_denom_value_sats
-
-                             "$82, " // ambiguous_denom_outputs_count
-                             "$83, " // ambiguous_denom_value_sats
-
-                             "$84, " // likely_change_outputs_count
-                             "$85, " // likely_change_value_sats
-
-                             "$86 "  // denomination_classifier_version
-
-                             ") ON CONFLICT DO NOTHING ;"
-    );
-    auto r3{w.exec_prepared(
-            "InsertBlock",
-            block.GetHash().GetHex(),                   // hash
-            block_index->hashMerkleRoot.GetHex(), // merkle_root
-            block_index->GetBlockTime(),          // time
-
-            block_index->GetMedianTimePast(),     // median_time
-            block_index->nHeight,                 // height
-            GetBlockSubsidy(block_index->nHeight, Params().GetConsensus()), // subsidy
-
-            static_cast<int64_t>(block.vtx.size()), // transactions_count
-            block_index->nVersion,                // version
-            block_index->nStatus,                 // status
-
-            block_index->nBits,                   // bits
-            block_index->nNonce,                  // nonce
-            GetDifficulty(*block_index),         // difficulty
-
-            block_index->nChainWork.GetHex(),      // chain_work
-            outputs_count,
-
-            inputs_count,
-            total_output_value,
-            total_input_value,
-            total_fees,
-
-            GetSerializeSize(TX_WITH_WITNESS(block)),
-            GetBlockWeight(block) / WITNESS_SCALE_FACTOR,
-            GetBlockWeight(block),
-
-            fee_rates_string_stream.str(),
-            output_data_string_stream.str(),
-            input_data_string_stream.str(),
-
-            transaction_data_string_stream.str(),
-            output_script_types_string_stream.str(),
-            input_script_types_string_stream.str(),
-
-            block_output_legacy_signature_operations,
-            block_input_legacy_signature_operations,
-            block_input_p2sh_signature_operations,
-            block_input_witness_signature_operations,
-
-            block_outputs_total_size,
-            block_inputs_total_size,
-            block_net_utxo_size_impact,
-            block.hashPrevBlock.ToString(),
-
-            ChainToString(),                                        // network
-            nonstandard_create_count,
-            pubkey_create_count,
-            pubkeyhash_create_count,
-            scripthash_create_count,
-            multisig_create_count,
-            null_data_create_count,
-            witness_v0_keyhash_create_count,
-            witness_v0_scripthash_create_count,
-            witness_v1_taproot_create_count,
-            witness_unknown_create_count,
-
-            nonstandard_spend_count,
-            pubkey_spend_count,
-            pubkeyhash_spend_count,
-            scripthash_spend_count,
-            multisig_spend_count,
-            null_data_spend_count,
-            witness_v0_keyhash_spend_count,
-            witness_v0_scripthash_spend_count,
-            witness_v1_taproot_spend_count,
-            witness_unknown_spend_count,
-            coinbase,
-
-            ordinals_weight,
-            ordinals_count,
-            ordinals_size,
-            ordinals_vsize,
-            ordinals_fees,
-
-            non_ordinals_weight,
-            non_ordinals_count,
-            non_ordinals_size,
-            non_ordinals_vsize,
-            non_ordinals_fees,
-
-            btc_usd_price_param,
-            btc_usd_price_low_param,
-            btc_usd_price_high_param,
-            btc_usd_price_source_param,
-            denomination_stats.eligible_outputs_count,
-            denomination_stats.eligible_value_sats,
-
-            denomination_stats.usd_outputs_count,
-            denomination_stats.usd_value_sats,
-            denomination_stats.usd_confidence_sum,
-
-            denomination_stats.sats_outputs_count,
-            denomination_stats.sats_value_sats,
-            denomination_stats.sats_confidence_sum,
-
-            denomination_stats.unknown_outputs_count,
-            denomination_stats.unknown_value_sats,
-
-            denomination_stats.ambiguous_outputs_count,
-            denomination_stats.ambiguous_value_sats,
-
-            denomination_stats.likely_change_outputs_count,
-            denomination_stats.likely_change_value_sats,
-
-            enterprise::DENOMINATION_CLASSIFIER_VERSION
-
-    )};
-    w.commit();
+    session.Prepare("EnterpriseInsertBlock", "INSERT INTO blocks "
+                                             "("
+                                             "hash, "
+                                             "merkle_root, "
+                                             "time, "
+
+                                             "median_time, "
+                                             "height, "
+                                             "subsidy, "
+
+                                             "transactions_count, "
+                                             "version, "
+                                             "status, "
+
+                                             "bits, "
+                                             "nonce, "
+                                             "difficulty, "
+
+                                             "chain_work, "
+                                             "outputs_count, "
+                                             "inputs_count, "
+
+                                             "total_output_value, "
+                                             "total_input_value, "
+                                             "total_fees, "
+
+                                             "total_size, "
+                                             "total_vsize, "
+                                             "total_weight, "
+
+                                             "fee_rates, "
+                                             "output_data, "
+                                             "input_data, "
+
+                                             "transaction_data, "
+                                             "output_script_types, "
+                                             "input_script_types, "
+
+                                             "output_legacy_signature_operations, "
+                                             "input_legacy_signature_operations, "
+                                             "input_p2sh_signature_operations, "
+                                             "input_witness_signature_operations, "
+
+                                             "outputs_total_size, "
+                                             "inputs_total_size, "
+                                             "net_utxo_size_impact, "
+
+                                             "hash_prev_block, "
+                                             "network, "
+
+                                             "nonstandard_create_count           , "
+                                             "pubkey_create_count                , "
+                                             "pubkeyhash_create_count            , "
+                                             "scripthash_create_count            , "
+                                             "multisig_create_count              , "
+                                             "null_data_create_count             , "
+                                             "witness_v0_keyhash_create_count    , "
+                                             "witness_v0_scripthash_create_count , "
+                                             "witness_v1_taproot_create_count    , "
+                                             "witness_unknown_create_count       , "
+
+                                             "nonstandard_spend_count            , "
+                                             "pubkey_spend_count                 , "
+                                             "pubkeyhash_spend_count             , "
+                                             "scripthash_spend_count             , "
+                                             "multisig_spend_count               , "
+                                             "null_data_spend_count              , "
+                                             "witness_v0_keyhash_spend_count     , "
+                                             "witness_v0_scripthash_spend_count  , "
+                                             "witness_v1_taproot_spend_count     , "
+                                             "witness_unknown_spend_count        , "
+                                             "coinbase , "
+
+                                             "ordinals_weight , "
+                                             "ordinals_count , "
+                                             "ordinals_size , "
+                                             "ordinals_vsize , "
+                                             "ordinals_fees, "
+
+                                             "non_ordinals_weight , "
+                                             "non_ordinals_count , "
+                                             "non_ordinals_size , "
+                                             "non_ordinals_vsize , "
+                                             "non_ordinals_fees, "
+
+                                             "btc_usd_price, "
+                                             "btc_usd_price_low, "
+                                             "btc_usd_price_high, "
+                                             "btc_usd_price_source, "
+                                             "denomination_eligible_outputs_count, "
+                                             "denomination_eligible_value_sats, "
+
+                                             "usd_denom_outputs_count, "
+                                             "usd_denom_value_sats, "
+                                             "usd_denom_confidence_sum, "
+
+                                             "sats_denom_outputs_count, "
+                                             "sats_denom_value_sats, "
+                                             "sats_denom_confidence_sum, "
+
+                                             "unknown_denom_outputs_count, "
+                                             "unknown_denom_value_sats, "
+
+                                             "ambiguous_denom_outputs_count, "
+                                             "ambiguous_denom_value_sats, "
+
+                                             "likely_change_outputs_count, "
+                                             "likely_change_value_sats, "
+
+                                             "denomination_classifier_version"
+
+                                             ") "
+
+                                             "VALUES "
+                                             "("
+                                             "$1, "               // hash
+                                             "$2, "               // merkle_root
+                                             "to_timestamp($3), " // time
+
+                                             "to_timestamp($4), " // median_time
+                                             "$5, "               // height
+                                             "$6, "               // subsidy
+
+                                             "$7, " // transactions_count
+                                             "$8, " // version
+                                             "$9, " // status
+
+                                             "$10, " // bits
+                                             "$11, " // nonce
+                                             "$12, " // difficulty
+
+                                             "$13, " // chain_work
+                                             "$14, " // outputs_count
+                                             "$15, " // inputs_count
+
+                                             "$16, " // total_output_value
+                                             "$17, " // total_input_value
+                                             "$18, " // total_fees
+
+                                             "$19, " // total_size
+                                             "$20, " // total_vsize
+                                             "$21, " // total_weight
+
+                                             "$22, " // fee_rates
+                                             "$23, " // output_data
+                                             "$24, " // input_data
+
+                                             "$25, " // transaction_data
+                                             "$26, " // output_script_types
+                                             "$27, " // input_script_types
+
+                                             "$28, " // output_legacy_signature_operations
+                                             "$29, " // input_legacy_signature_operations
+                                             "$30, " // input_p2sh_signature_operations
+                                             "$31, " // input_witness_signature_operations
+
+                                             "$32, " // outputs_total_size
+                                             "$33, " // inputs_total_size
+                                             "$34, " // net_utxo_size_impact
+
+                                             "$35, " // hash_prev_block
+                                             "$36, " // network
+
+                                             "$37, " // nonstandard_create_count
+                                             "$38, " // pubkey_create_count
+                                             "$39, " // pubkeyhash_create_count
+                                             "$40, " // scripthash_create_count
+                                             "$41, " // multisig_create_count
+                                             "$42, " // null_data_create_count
+                                             "$43, " // witness_v0_keyhash_create_count
+                                             "$44, " // witness_v0_scripthash_create_count
+                                             "$45, " // witness_v1_taproot_create_count
+                                             "$46, " // witness_unknown_create_count
+
+                                             "$47, " // nonstandard_spend_count
+                                             "$48, " // pubkey_spend_count
+                                             "$49, " // pubkeyhash_spend_count
+                                             "$50, " // scripthash_spend_count
+                                             "$51, " // multisig_spend_count
+                                             "$52, " // null_data_spend_count
+                                             "$53, " // witness_v0_keyhash_spend_count
+                                             "$54, " // witness_v0_scripthash_spend_count
+                                             "$55, " // witness_v1_taproot_spend_count
+                                             "$56, " // witness_unknown_spend_count
+                                             "$57, " // coinbase
+
+                                             "$58, " // ordinals_weight
+                                             "$59, " // ordinals_count
+                                             "$60, " // ordinals_size
+                                             "$61, " // ordinals_vsize
+                                             "$62, " // ordinals_fees
+
+                                             "$63, " // non_ordinals_weight
+                                             "$64, " // non_ordinals_count
+                                             "$65, " // non_ordinals_size
+                                             "$66, " // non_ordinals_vsize
+                                             "$67, " // non_ordinals_fees
+
+                                             "NULLIF($68::text, '')::double precision, " // btc_usd_price
+                                             "NULLIF($69::text, '')::double precision, " // btc_usd_price_low
+                                             "NULLIF($70::text, '')::double precision, " // btc_usd_price_high
+                                             "NULLIF($71::text, ''), "                   // btc_usd_price_source
+                                             "$72, "                                     // denomination_eligible_outputs_count
+                                             "$73, "                                     // denomination_eligible_value_sats
+
+                                             "$74, " // usd_denom_outputs_count
+                                             "$75, " // usd_denom_value_sats
+                                             "$76, " // usd_denom_confidence_sum
+
+                                             "$77, " // sats_denom_outputs_count
+                                             "$78, " // sats_denom_value_sats
+                                             "$79, " // sats_denom_confidence_sum
+
+                                             "$80, " // unknown_denom_outputs_count
+                                             "$81, " // unknown_denom_value_sats
+
+                                             "$82, " // ambiguous_denom_outputs_count
+                                             "$83, " // ambiguous_denom_value_sats
+
+                                             "$84, " // likely_change_outputs_count
+                                             "$85, " // likely_change_value_sats
+
+                                             "$86 " // denomination_classifier_version
+
+                                             ") ON CONFLICT DO NOTHING RETURNING 1;");
+    auto r3{enterprise::ExecPrepared(
+        work,
+        "EnterpriseInsertBlock",
+        block.GetHash().GetHex(),             // hash
+        block_index->hashMerkleRoot.GetHex(), // merkle_root
+        block_index->GetBlockTime(),          // time
+
+        block_index->GetMedianTimePast(),                               // median_time
+        block_index->nHeight,                                           // height
+        GetBlockSubsidy(block_index->nHeight, Params().GetConsensus()), // subsidy
+
+        static_cast<int64_t>(block.vtx.size()), // transactions_count
+        block_index->nVersion,                  // version
+        block_index->nStatus,                   // status
+
+        block_index->nBits,          // bits
+        block_index->nNonce,         // nonce
+        GetDifficulty(*block_index), // difficulty
+
+        block_index->nChainWork.GetHex(), // chain_work
+        outputs_count,
+
+        inputs_count,
+        total_output_value,
+        total_input_value,
+        total_fees,
+
+        GetSerializeSize(TX_WITH_WITNESS(block)),
+        GetBlockWeight(block) / WITNESS_SCALE_FACTOR,
+        GetBlockWeight(block),
+
+        fee_rates_string_stream.str(),
+        output_data_string_stream.str(),
+        input_data_string_stream.str(),
+
+        transaction_data_string_stream.str(),
+        output_script_types_string_stream.str(),
+        input_script_types_string_stream.str(),
+
+        block_output_legacy_signature_operations,
+        block_input_legacy_signature_operations,
+        block_input_p2sh_signature_operations,
+        block_input_witness_signature_operations,
+
+        block_outputs_total_size,
+        block_inputs_total_size,
+        block_net_utxo_size_impact,
+        block.hashPrevBlock.ToString(),
+
+        ChainToString(), // network
+        nonstandard_create_count,
+        pubkey_create_count,
+        pubkeyhash_create_count,
+        scripthash_create_count,
+        multisig_create_count,
+        null_data_create_count,
+        witness_v0_keyhash_create_count,
+        witness_v0_scripthash_create_count,
+        witness_v1_taproot_create_count,
+        witness_unknown_create_count,
+
+        nonstandard_spend_count,
+        pubkey_spend_count,
+        pubkeyhash_spend_count,
+        scripthash_spend_count,
+        multisig_spend_count,
+        null_data_spend_count,
+        witness_v0_keyhash_spend_count,
+        witness_v0_scripthash_spend_count,
+        witness_v1_taproot_spend_count,
+        witness_unknown_spend_count,
+        coinbase,
+
+        ordinals_weight,
+        ordinals_count,
+        ordinals_size,
+        ordinals_vsize,
+        ordinals_fees,
+
+        non_ordinals_weight,
+        non_ordinals_count,
+        non_ordinals_size,
+        non_ordinals_vsize,
+        non_ordinals_fees,
+
+        btc_usd_price_param,
+        btc_usd_price_low_param,
+        btc_usd_price_high_param,
+        btc_usd_price_source_param,
+        denomination_stats.eligible_outputs_count,
+        denomination_stats.eligible_value_sats,
+
+        denomination_stats.usd_outputs_count,
+        denomination_stats.usd_value_sats,
+        denomination_stats.usd_confidence_sum,
+
+        denomination_stats.sats_outputs_count,
+        denomination_stats.sats_value_sats,
+        denomination_stats.sats_confidence_sum,
+
+        denomination_stats.unknown_outputs_count,
+        denomination_stats.unknown_value_sats,
+
+        denomination_stats.ambiguous_outputs_count,
+        denomination_stats.ambiguous_value_sats,
+
+        denomination_stats.likely_change_outputs_count,
+        denomination_stats.likely_change_value_sats,
+
+        enterprise::DENOMINATION_CLASSIFIER_VERSION
+
+        )};
+    if (r3.size() != 1) {
+        throw std::runtime_error("enterprise block row conflicted while it was being replaced");
+    }
 }
 
-TransactionData::TransactionData(const int &transaction_index, const CTransactionRef &transaction) :
+TransactionData::TransactionData(std::size_t transaction_index, const CTransactionRef &transaction) :
         m_transaction_index(transaction_index),
         m_transaction(transaction) {
     transaction_hash = transaction->GetHash().GetHex();

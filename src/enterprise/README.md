@@ -61,12 +61,14 @@ network datadir. Environment variables override file values.
 
 The denomination classifier uses the block header time for BTC/USD lookup. Daily
 `prices.day` rows match the header time's UTC date; timestamp rows use the
-nearest row on that UTC date.
+nearest row on that UTC date. Missing dates remain unpriced rather than silently
+carrying stale price data forward.
 `prices.price_low`, `prices.price_high`, and `prices.price_source` are optional;
 when low/high are absent the exporter uses a +/-2.5% window around `price` and
 records the source as `prices.price:fallback_2_5pct`. If no usable row exists,
 eligible non-coinbase outputs are exported as unknown rather than failing the
-block export.
+block export. A zero source price is preserved as zero but is not a valid
+classification window, so its eligible outputs remain unknown.
 
 ```shell
 PGDB=bitcoin

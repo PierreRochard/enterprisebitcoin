@@ -6,8 +6,11 @@
 #include <enterprise/pg.h>
 #include <interfaces/chain.h>
 #include <interfaces/types.h>
+#include <kernel/chain.h>
 #include <kernel/types.h>
+#include <node/abort.h>
 #include <node/blockstorage.h>
+#include <node/context.h>
 #include <primitives/block.h>
 #include <script/verify_flags.h>
 #include <tinyformat.h>
@@ -18,6 +21,7 @@
 #include <util/log.h>
 #include <util/signalinterrupt.h>
 #include <util/thread.h>
+#include <util/translation.h>
 #include <validation.h>
 
 #include <algorithm>
@@ -27,6 +31,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,15 +45,14 @@ static constexpr std::size_t COVERED_CONNECT_BATCH_SIZE{2048};
 EnterpriseIndex::EnterpriseIndex(std::unique_ptr<interfaces::Chain> chain, size_t n_cache_size, bool f_memory, bool f_wipe)
     : BaseIndex(std::move(chain), "enterpriseindex", "enterpriseidx"),
       m_db{std::make_unique<BaseIndex::DB>(gArgs.GetDataDirNet() / "indexes" / "enterpriseindex" / "db", n_cache_size, f_memory, f_wipe)},
-      m_spool{gArgs.GetDataDirNet() / "enterprise" / "block_spool"}
+      m_spool{gArgs.GetDataDirNet() / "enterprise" / "block_spool"},
+      m_backfill_height{static_cast<int>(gArgs.GetIntArg("-enterprisebackfillheight", DEFAULT_ENTERPRISE_BACKFILL_HEIGHT))}
 {
     if (f_wipe) {
         const std::vector<fs::path> stale_spool{m_spool.Pending()};
         if (!stale_spool.empty()) {
-            LogInfo("enterprise: removing %u stale block spool files for -reindex replay", stale_spool.size());
-            if (!m_spool.RemoveMany(stale_spool)) {
-                LogError("enterprise: failed to remove stale block spool files for -reindex replay");
-            }
+            m_reindex_with_pending_spool = true;
+            LogError("enterprise: refusing automatic removal of %u pending block spool files for -reindex", stale_spool.size());
         }
     }
 
@@ -74,8 +78,42 @@ interfaces::Chain::NotifyOptions EnterpriseIndex::CustomOptions()
     return options;
 }
 
+void EnterpriseIndex::BlockDisconnected(const std::shared_ptr<const CBlock>& block, const CBlockIndex* pindex)
+{
+    // BaseIndex normally rewinds only when the replacement BlockConnected
+    // notification arrives. The SQL export must also reflect a tip
+    // invalidation while the chain is temporarily one block shorter, so queue
+    // the disconnect as soon as it is announced. BaseIndex may queue the same
+    // idempotent delete again during its later rewind.
+    if (!GetSummary().synced) return;
+    const interfaces::BlockInfo block_info{kernel::MakeBlockInfo(pindex, block.get())};
+    if (!CustomRemove(block_info)) {
+        const std::string message{strprintf(
+            "enterprise: failed to durably spool disconnected block %s",
+            pindex->GetBlockHash().ToString())};
+        LogError("%s", message);
+        node::AbortNode(
+            m_chain->context()->shutdown_request,
+            m_chain->context()->exit_status,
+            Untranslated(message),
+            m_chain->context()->warnings.get());
+    }
+}
+
 bool EnterpriseIndex::CustomInit(const std::optional<interfaces::BlockRef>&)
 {
+    if (m_reindex_with_pending_spool) {
+        LogError("enterprise: archive or reconcile the pending block spool before restarting with -reindex");
+        return false;
+    }
+    try {
+        enterprise::ValidateEnterpriseSchema();
+    } catch (const std::exception& e) {
+        LogError("enterprise: PostgreSQL schema validation failed: %s", e.what());
+        LogError("enterprise: apply and verify migration 20260711_pg17_reuse_v1 before restarting");
+        return false;
+    }
+    LogInfo("enterprise: PostgreSQL 17 schema migration 20260711_pg17_reuse_v1 validated");
     StartWriter();
     return true;
 }
@@ -91,7 +129,7 @@ bool EnterpriseIndex::CustomAppend(const interfaces::BlockInfo& block)
     delta.event_type = EnterpriseSpoolEventType::CONNECT;
     delta.block_hash = block.hash;
     delta.height = block.height;
-    delta.source = "index";
+    delta.source = block.height <= m_backfill_height ? "denomination-backfill" : "index";
     delta.block = *block.data;
     if (block.undo_data) delta.undo = *block.undo_data;
 
@@ -125,7 +163,11 @@ bool EnterpriseIndex::CustomRemove(const interfaces::BlockInfo& block)
 
 void EnterpriseIndex::NotifyWriter()
 {
-    m_writer_cv.notify_one();
+    {
+        std::lock_guard<std::mutex> lock{m_writer_mutex};
+        ++m_writer_wakeup_generation;
+    }
+    m_writer_cv.notify_all();
 }
 
 void EnterpriseIndex::StartWriter()
@@ -152,17 +194,31 @@ void EnterpriseIndex::StopWriter()
 
 void EnterpriseIndex::WriterLoop()
 {
+    enterprise::PgSession session;
     while (true) {
-        if (!DrainOnce()) {
-            std::unique_lock<std::mutex> lock{m_writer_mutex};
-            m_writer_cv.wait_for(lock, 30s, [this] { return m_writer_stop; });
-        } else {
-            std::unique_lock<std::mutex> lock{m_writer_mutex};
+        uint64_t observed_generation;
+        {
+            std::lock_guard<std::mutex> lock{m_writer_mutex};
             if (m_writer_stop) return;
-            m_writer_cv.wait_for(lock, 5s, [this] { return m_writer_stop; });
+            observed_generation = m_writer_wakeup_generation;
         }
 
-        std::lock_guard<std::mutex> lock{m_writer_mutex};
+        bool drained{false};
+        try {
+            drained = DrainOnce(session);
+        } catch (const std::exception& e) {
+            session.Reset();
+            LogError("enterprise: PostgreSQL writer iteration failed; durable spool retained for retry: %s", e.what());
+        } catch (...) {
+            session.Reset();
+            LogError("enterprise: PostgreSQL writer iteration failed with an unknown error; durable spool retained for retry");
+        }
+
+        std::unique_lock<std::mutex> lock{m_writer_mutex};
+        if (m_writer_stop) return;
+        m_writer_cv.wait_for(lock, drained ? 5s : 30s, [this, observed_generation] {
+            return m_writer_stop || m_writer_wakeup_generation != observed_generation;
+        });
         if (m_writer_stop) return;
     }
 }
@@ -193,7 +249,11 @@ bool EnterpriseIndex::ApplySpoolBackpressure()
         {
             std::unique_lock<std::mutex> lock{m_writer_mutex};
             if (m_writer_stop) return true;
-            m_writer_cv.wait_for(lock, 5s, [this, &shutdown_interrupted] { return m_writer_stop || shutdown_interrupted(); });
+            const uint64_t observed_generation{m_writer_wakeup_generation};
+            if (m_spool.UsageBytes() <= m_spool_max_bytes) continue;
+            m_writer_cv.wait_for(lock, 5s, [this, &shutdown_interrupted, observed_generation] {
+                return m_writer_stop || shutdown_interrupted() || m_writer_wakeup_generation != observed_generation;
+            });
             if (m_writer_stop || shutdown_interrupted()) return true;
         }
     }
@@ -204,14 +264,14 @@ bool EnterpriseIndex::ApplySpoolBackpressure()
     return true;
 }
 
-bool EnterpriseIndex::DrainOnce()
+bool EnterpriseIndex::DrainOnce(enterprise::PgSession& session)
 {
     bool all_drained{true};
     std::vector<std::pair<fs::path, EnterpriseBlockSpoolFileInfo>> covered_connect_batch;
 
     auto flush_covered_connect_batch = [&] {
         if (covered_connect_batch.empty()) return true;
-        const bool processed{ProcessCoveredConnectBatch(covered_connect_batch)};
+        const bool processed{ProcessCoveredConnectBatch(session, covered_connect_batch)};
         covered_connect_batch.clear();
         return processed;
     };
@@ -235,7 +295,7 @@ bool EnterpriseIndex::DrainOnce()
             all_drained = false;
             break;
         }
-        if (!ProcessSpoolFile(path)) {
+        if (!ProcessSpoolFile(session, path)) {
             all_drained = false;
             break;
         }
@@ -249,7 +309,7 @@ bool EnterpriseIndex::DrainOnce()
     return all_drained;
 }
 
-bool EnterpriseIndex::ProcessCoveredConnectBatch(const std::vector<std::pair<fs::path, EnterpriseBlockSpoolFileInfo>>& batch)
+bool EnterpriseIndex::ProcessCoveredConnectBatch(enterprise::PgSession& session, const std::vector<std::pair<fs::path, EnterpriseBlockSpoolFileInfo>>& batch)
 {
     if (batch.empty()) return true;
 
@@ -261,88 +321,151 @@ bool EnterpriseIndex::ProcessCoveredConnectBatch(const std::vector<std::pair<fs:
 
     std::set<std::pair<int, std::string>> matching_rows;
     try {
-        for (const enterprise::BlockRowKey& row : enterprise::FindMatchingBlockRows(keys)) {
+        pqxx::work work{session.Connection()};
+        for (const enterprise::BlockRowKey& row : enterprise::FindCoveredBlockRows(work, keys, m_backfill_height)) {
             matching_rows.emplace(row.height, row.hash.GetHex());
         }
+        work.commit();
     } catch (const std::exception& e) {
+        session.Reset();
         LogError("enterprise: failed to batch-check spooled blocks in postgres: %s", e.what());
         return false;
     }
 
-    std::vector<fs::path> covered_paths;
-    covered_paths.reserve(batch.size());
     for (const auto& [path, info] : batch) {
         if (matching_rows.contains({info.height, info.block_hash.GetHex()})) {
-            covered_paths.push_back(path);
-        }
-    }
-
-    if (!covered_paths.empty()) {
-        if (!m_spool.RemoveMany(covered_paths)) return false;
-        m_writer_cv.notify_all();
-        LogDebug(BCLog::ALL, "enterprise: removed %u already-covered block spool files\n", covered_paths.size());
-    }
-
-    for (const auto& [path, info] : batch) {
-        if (!matching_rows.contains({info.height, info.block_hash.GetHex()}) && !ProcessSpoolFile(path)) {
+            if (!ProcessCoveredSpoolFile(session, path, info)) return false;
+        } else if (!ProcessSpoolFile(session, path, ConnectRowCoverage::BATCH_UNCOVERED)) {
             return false;
         }
     }
     return true;
 }
 
-bool EnterpriseIndex::ProcessSpoolFile(const fs::path& path)
+std::string EnterpriseIndex::IngestSource(const EnterpriseBlockDelta& delta) const
 {
-    if (const auto info{EnterpriseBlockSpool::InfoFromFileName(path)}; info && info->event_type == EnterpriseSpoolEventType::CONNECT) {
+    if (delta.event_type == EnterpriseSpoolEventType::CONNECT &&
+        m_backfill_height >= 0 &&
+        delta.height <= m_backfill_height) {
+        return "denomination-backfill";
+    }
+    return delta.source;
+}
+
+bool EnterpriseIndex::ProcessCoveredSpoolFile(enterprise::PgSession& session, const fs::path& path, const EnterpriseBlockSpoolFileInfo& info)
+{
+    EnterpriseBlockDelta delta;
+    if (!m_spool.Read(path, delta)) return false;
+    if (delta.event_type != EnterpriseSpoolEventType::CONNECT ||
+        delta.height != info.height ||
+        delta.block_hash != info.block_hash) {
+        LogError("enterprise: covered spool filename does not match its payload: %s", fs::PathToString(path));
+        return false;
+    }
+
+    delta.source = IngestSource(delta);
+    try {
+        // A database commit may have succeeded immediately before a crash or
+        // shutdown prevented the durable spool file from being removed. Repair
+        // the monitoring records atomically before acknowledging that file.
+        pqxx::work work{session.Connection()};
+        enterprise::ReconcileCoveredIngest(session, work, delta, path, delta.source);
+        work.commit();
+    } catch (const std::exception& e) {
+        session.Reset();
+        LogError("enterprise: failed to reconcile covered spooled block %s: %s", delta.block_hash.ToString(), e.what());
+        return false;
+    }
+
+    const bool removed{m_spool.Remove(path)};
+    if (removed) {
+        NotifyWriter();
+        LogDebug(BCLog::ALL, "enterprise: reconciled and removed already-covered block %s\n", delta.block_hash.ToString());
+    }
+    return removed;
+}
+
+bool EnterpriseIndex::ProcessSpoolFile(enterprise::PgSession& session, const fs::path& path, ConnectRowCoverage coverage)
+{
+    EnterpriseBlockDelta delta;
+    if (!m_spool.Read(path, delta)) return false;
+    delta.source = IngestSource(delta);
+
+    if (delta.event_type == EnterpriseSpoolEventType::CONNECT && coverage == ConnectRowCoverage::CHECK) {
         try {
-            if (enterprise::BlockRowMatches(info->height, info->block_hash)) {
-                const bool removed{m_spool.Remove(path)};
-                if (removed) m_writer_cv.notify_all();
-                return removed;
+            if (enterprise::BlockRowCovered(delta.height, delta.block_hash, m_backfill_height)) {
+                const EnterpriseBlockSpoolFileInfo info{
+                    .event_type = delta.event_type,
+                    .height = delta.height,
+                    .block_hash = delta.block_hash,
+                };
+                return ProcessCoveredSpoolFile(session, path, info);
             }
         } catch (const std::exception& e) {
-            LogError("enterprise: failed to check spooled block %s in postgres: %s", info->block_hash.ToString(), e.what());
+            LogError("enterprise: failed to check spooled block %s in postgres: %s", delta.block_hash.ToString(), e.what());
             return false;
         }
     }
 
-    EnterpriseBlockDelta delta;
-    if (!m_spool.Read(path, delta)) return false;
+    // FindCoveredBlockRows already checked batch-uncovered connect rows. The
+    // database may change after that snapshot, so BlockToSql must still run:
+    // its transactional write-mode check resolves concurrent inserts and
+    // classifier updates before it changes the row.
 
     try {
-        enterprise::MarkIngestStarted(delta, path, delta.source);
-        if (delta.event_type == EnterpriseSpoolEventType::DISCONNECT) {
-            DeleteBlockFromSql(delta.block_hash);
-        } else {
-            if (enterprise::BlockRowMatches(delta.height, delta.block_hash)) {
-                enterprise::MarkGapResolved(delta.height, delta.block_hash, delta.source);
-                enterprise::MarkIngestSucceeded(delta, path, delta.source);
-                const bool removed{m_spool.Remove(path)};
-                if (removed) m_writer_cv.notify_all();
-                return removed;
-            }
+        // Historical backfill transactions are idempotent, and a crash after
+        // the block update is repaired by the covered-spool reconciliation
+        // path. Non-historical writes retain a durable "started" record before
+        // attempting the block transaction.
+        if (delta.source != "denomination-backfill") {
+            pqxx::work started_work{session.Connection()};
+            enterprise::MarkIngestStarted(session, started_work, delta, path, delta.source);
+            started_work.commit();
+        }
 
+        // The block mutation and its succeeded/gap bookkeeping are one durable
+        // transaction. The spool file is removed only after this commit.
+        pqxx::work work{session.Connection()};
+        if (delta.event_type == EnterpriseSpoolEventType::DISCONNECT) {
+            DeleteBlockFromSql(session, work, delta.block_hash);
+        } else {
             const CBlockIndex* pindex{WITH_LOCK(::cs_main, return m_chainstate->m_blockman.LookupBlockIndex(delta.block_hash))};
             if (!pindex) {
-                LogError("enterprise: cannot find block index entry for spooled block %s", delta.block_hash.ToString());
-                return false;
+                throw std::runtime_error(strprintf(
+                    "cannot find block index entry for spooled block %s",
+                    delta.block_hash.ToString()));
             }
             if (pindex->nHeight != delta.height) {
-                LogError("enterprise: spooled block %s height mismatch: index=%d spool=%d", delta.block_hash.ToString(), pindex->nHeight, delta.height);
-                return false;
+                throw std::runtime_error(strprintf(
+                    "spooled block %s height mismatch: index=%d spool=%d",
+                    delta.block_hash.ToString(),
+                    pindex->nHeight,
+                    delta.height));
             }
-            BlockToSql block_to_sql{pindex, delta.block, delta.undo, delta.ScriptFlags()};
-            enterprise::MarkGapResolved(delta.height, delta.block_hash, delta.source);
+            BlockToSql block_to_sql{session, work, pindex, delta.block, delta.undo, delta.ScriptFlags()};
         }
-        enterprise::MarkIngestSucceeded(delta, path, delta.source);
+        enterprise::MarkIngestSucceeded(session, work, delta, path, delta.source);
+        work.commit();
+    } catch (const pqxx::in_doubt_error& e) {
+        // PostgreSQL may have committed even though the acknowledgement was
+        // lost. Keep the durable spool file and let the next covered-row pass
+        // reconcile the outcome; recording a failure here could overwrite a
+        // successful ingest record and an immediate blind retry is unsafe.
+        session.Reset();
+        LogError(
+            "enterprise: PostgreSQL commit outcome is unknown for spooled block %s; durable spool retained for reconciliation: %s",
+            delta.block_hash.ToString(),
+            e.what());
+        return false;
     } catch (const std::exception& e) {
+        session.Reset();
         enterprise::MarkIngestFailed(delta, path, delta.source, e.what());
         LogError("enterprise: failed to write spooled block %s to postgres: %s", delta.block_hash.ToString(), e.what());
         return false;
     }
 
     const bool removed{m_spool.Remove(path)};
-    if (removed) m_writer_cv.notify_all();
+    if (removed) NotifyWriter();
     return removed;
 }
 
@@ -388,12 +511,22 @@ bool EnterpriseIndex::ReconcileGaps()
     for (const int height : gaps) {
         const CBlockIndex* pindex{WITH_LOCK(::cs_main, return m_chainstate->m_chain[height])};
         if (!pindex) continue;
+        const std::string source{
+            m_backfill_height >= 0 && height <= m_backfill_height ? "denomination-backfill" : "local"};
         if (QueueLocalBackfill(*pindex)) {
-            enterprise::MarkGapQueued(height, pindex->GetBlockHash(), "local");
             queued = true;
+            try {
+                enterprise::MarkGapQueued(height, pindex->GetBlockHash(), source);
+            } catch (const std::exception& e) {
+                // The block delta is already durable. Leave it queued and let
+                // the normal spool path repair gap/ingest bookkeeping once
+                // PostgreSQL is available again.
+                LogWarning("enterprise: failed to mark queued gap at height %d; durable spool retained: %s", height, e.what());
+            }
+            NotifyWriter();
             continue;
         }
-        enterprise::MarkGapUnavailable(height, pindex->GetBlockHash(), "local", "block delta not available locally; rewind or run full -reindex to replay the enterprise index");
+        enterprise::MarkGapUnavailable(height, pindex->GetBlockHash(), source, "block delta not available locally; rewind or run full -reindex to replay the enterprise index");
     }
     if (!queued) {
         m_next_gap_scan = now + 60s;
@@ -413,7 +546,7 @@ bool EnterpriseIndex::QueueLocalBackfill(const CBlockIndex& block_index)
     delta.event_type = EnterpriseSpoolEventType::CONNECT;
     delta.block_hash = block_index.GetBlockHash();
     delta.height = block_index.nHeight;
-    delta.source = "local";
+    delta.source = block_index.nHeight <= m_backfill_height ? "denomination-backfill" : "local";
     delta.script_flags = GetBlockScriptFlags(block_index, m_chainstate->m_chainman).as_int();
     delta.block = std::move(block);
     delta.undo = std::move(undo);

@@ -14,13 +14,23 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
+namespace enterprise {
+class PgSession;
+}
+
 class EnterpriseIndex final : public BaseIndex
 {
 private:
+    enum class ConnectRowCoverage {
+        CHECK,
+        BATCH_UNCOVERED,
+    };
+
     std::unique_ptr<BaseIndex::DB> m_db;
     EnterpriseBlockSpool m_spool;
 
@@ -28,7 +38,10 @@ private:
     std::mutex m_writer_mutex;
     std::condition_variable m_writer_cv;
     bool m_writer_stop{false};
+    uint64_t m_writer_wakeup_generation{0};
     uint64_t m_spool_max_bytes{0};
+    int m_backfill_height{static_cast<int>(DEFAULT_ENTERPRISE_BACKFILL_HEIGHT)};
+    bool m_reindex_with_pending_spool{false};
 
     bool AllowPrune() const override { return true; }
 
@@ -37,15 +50,18 @@ private:
     void StopWriter();
     void WriterLoop();
     bool ApplySpoolBackpressure();
-    bool DrainOnce();
-    bool ProcessCoveredConnectBatch(const std::vector<std::pair<fs::path, EnterpriseBlockSpoolFileInfo>>& batch);
-    bool ProcessSpoolFile(const fs::path& path);
+    bool DrainOnce(enterprise::PgSession& session);
+    bool ProcessCoveredConnectBatch(enterprise::PgSession& session, const std::vector<std::pair<fs::path, EnterpriseBlockSpoolFileInfo>>& batch);
+    bool ProcessCoveredSpoolFile(enterprise::PgSession& session, const fs::path& path, const EnterpriseBlockSpoolFileInfo& info);
+    bool ProcessSpoolFile(enterprise::PgSession& session, const fs::path& path, ConnectRowCoverage coverage = ConnectRowCoverage::CHECK);
     bool ReconcileGaps();
     bool QueueLocalBackfill(const CBlockIndex& block_index);
+    std::string IngestSource(const EnterpriseBlockDelta& delta) const;
 
     NodeClock::time_point m_next_gap_scan{};
 
 protected:
+    void BlockDisconnected(const std::shared_ptr<const CBlock>& block, const CBlockIndex* pindex) override;
     bool CustomInit(const std::optional<interfaces::BlockRef>& block) override;
     bool CustomAppend(const interfaces::BlockInfo& block) override;
     bool CustomRemove(const interfaces::BlockInfo& block) override;

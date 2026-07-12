@@ -15,6 +15,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -134,16 +135,15 @@ class RpcClient:
 
 
 class PsqlClient:
-    def __init__(self, *, psql: str, pg_env: dict[str, str]) -> None:
+    def __init__(self, *, psql: str, pg_env: dict[str, str], read_only: bool = True) -> None:
         self.psql = psql
         self.pg_env = pg_env
+        self.read_only = read_only
 
     def query(self, sql: str) -> str:
-        env = os.environ.copy()
-        env.update(self.pg_env)
         return subprocess.check_output(
             [self.psql, "-X", "-v", "ON_ERROR_STOP=1", "-At", "-c", sql],
-            env=env,
+            env=pg_subprocess_env(self.pg_env, read_only=self.read_only),
             text=True,
         )
 
@@ -152,13 +152,56 @@ class PsqlClient:
         return list(csv.reader(output.splitlines(), delimiter="\t"))
 
 
+def pg_subprocess_env(pg_env: dict[str, str], *, read_only: bool = True) -> dict[str, str]:
+    """Return a bounded libpq environment for verifier or disposable-fixture subprocesses."""
+    env = os.environ.copy()
+    for name in {
+        "PGAPPNAME",
+        "PGCONNECT_TIMEOUT",
+        "PGDATABASE",
+        "PGHOST",
+        "PGHOSTADDR",
+        "PGLOADBALANCEHOSTS",
+        "PGOPTIONS",
+        "PGPASSFILE",
+        "PGPASSWORD",
+        "PGPORT",
+        "PGSERVICE",
+        "PGSERVICEFILE",
+        "PGTARGETSESSIONATTRS",
+        "PGUSER",
+    }:
+        env.pop(name, None)
+    env.update(pg_env)
+    env.update({
+        "PGAPPNAME": "enterprise-block-verifier",
+        "PGCONNECT_TIMEOUT": "10",
+        "PGOPTIONS": (
+            f"-c default_transaction_read_only={'on' if read_only else 'off'} "
+            "-c statement_timeout=300000 "
+            "-c lock_timeout=5000 "
+            f"-c search_path={'pg_catalog,public' if read_only else 'public,pg_catalog'}"
+        ),
+    })
+    return env
+
+
 def read_dotenv(path: Path) -> dict[str, str]:
-    values = {}
-    for raw_line in path.read_text(encoding="utf8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    allowed = {"PGDB", "PGUSER", "PGPASSWORD", "PGHOST", "PGPORT"}
+    values: dict[str, str] = {}
+    for line_number, line in enumerate(path.read_text(encoding="utf8").splitlines(), start=1):
+        if not line or line.startswith("#"):
             continue
-        key, value = line.split("=", 1)
+        match = re.fullmatch(r"([A-Z][A-Z0-9_]*)=([^#\s'\"]+)", line)
+        if match is None:
+            raise ValueError(
+                f"invalid dotenv syntax on line {line_number}; use exact unquoted KEY=VALUE lines"
+            )
+        key, value = match.groups()
+        if key not in allowed:
+            raise ValueError(f"unexpected dotenv key on line {line_number}: {key}")
+        if key in values:
+            raise ValueError(f"duplicate dotenv key on line {line_number}: {key}")
         values[key] = value
     return values
 
@@ -305,21 +348,28 @@ def compare_header_rows(
     *,
     rpc: RpcClient,
     rows: list[dict[str, Any]],
-    active_height: int,
+    min_height: int,
+    max_height: int,
     batch_size: int,
 ) -> VerificationSummary:
     summary = VerificationSummary(name="headers")
-    if not rows:
+    summary.details.update({
+        "min_height": min_height,
+        "max_height": max_height,
+    })
+    if min_height > max_height:
         return summary
-    compare_max = min(rows[-1]["height"], active_height)
-    by_height = {row["height"]: row for row in rows if row["height"] <= compare_max}
-    if rows[0]["height"] == 0:
-        expected_rows = compare_max + 1
-        if len(by_height) != expected_rows:
-            summary.mismatches.append(Mismatch(None, "coverage_count", len(by_height), expected_rows))
 
-    for base in range(rows[0]["height"], compare_max + 1, batch_size):
-        heights = list(range(base, min(compare_max + 1, base + batch_size)))
+    by_height = {row["height"]: row for row in rows}
+    expected_rows = max_height - min_height + 1
+    if len(by_height) != expected_rows:
+        summary.mismatches.append(Mismatch(None, "coverage_count", len(by_height), expected_rows))
+    duplicate_rows = len(rows) - len(by_height)
+    if duplicate_rows:
+        summary.mismatches.append(Mismatch(None, "duplicate_height_rows", duplicate_rows, 0))
+
+    for base in range(min_height, max_height + 1, batch_size):
+        heights = list(range(base, min(max_height + 1, base + batch_size)))
         hashes = rpc.batch([("getblockhash", [height]) for height in heights])
         headers = rpc.batch([("getblockheader", [block_hash]) for block_hash in hashes])
         for height, header in zip(heights, headers):
@@ -350,11 +400,6 @@ def compare_header_rows(
                 summary.mismatches.append(Mismatch(height, "difficulty", row["difficulty"], header["difficulty"]))
             summary.rows_compared += 1
 
-    summary.details.update({
-        "min_height": rows[0]["height"],
-        "max_height": rows[-1]["height"],
-        "compare_max": compare_max,
-    })
     return summary
 
 
@@ -405,6 +450,8 @@ def compare_body_rows(
 def sample_heights(min_height: int, max_height: int, sample_count: int) -> list[int]:
     if sample_count <= 0:
         return []
+    if sample_count == 1:
+        return [min_height]
     total = max_height - min_height + 1
     if sample_count >= total:
         return list(range(min_height, max_height + 1))
@@ -433,21 +480,148 @@ def compare_getblock_samples(*, rpc: RpcClient, rows: list[dict[str, Any]], samp
     return mismatches
 
 
-def check_sql_consistency(psql: PsqlClient, *, network: str) -> VerificationSummary:
+def check_sql_consistency(
+    psql: PsqlClient,
+    *,
+    network: str,
+    min_height: int,
+    max_height: int,
+) -> VerificationSummary:
     summary = VerificationSummary(name="sql_consistency")
     network_sql = sql_literal(network)
+    height_predicates = f"""
+          AND height >= {min_height}
+          AND height <= {max_height}
+    """
+    check_names = [
+        "tx_json_mismatches",
+        "zero_tx_rows",
+        "classifier_version_mismatches",
+        "denomination_null_fields",
+        "denomination_negative_fields",
+        "category_count_mismatches",
+        "category_value_mismatches",
+        "likely_change_count_mismatches",
+        "likely_change_value_mismatches",
+        "confidence_mismatches",
+        "partial_price_windows",
+        "missing_prices_after_first_day",
+        "invalid_price_windows",
+    ]
     rows = psql.query_rows(f"""
-        SELECT 'tx_json_mismatches', count(*)
+        SELECT
+            count(*) FILTER (
+                WHERE transactions_count IS DISTINCT FROM jsonb_array_length(transaction_data)
+            ),
+            count(*) FILTER (WHERE transactions_count = 0),
+            count(*) FILTER (
+                WHERE denomination_classifier_version IS DISTINCT FROM 'denomination-v2'
+            ),
+            count(*) FILTER (
+                WHERE denomination_classifier_version = 'denomination-v2'
+                  AND num_nonnulls(
+                      denomination_eligible_outputs_count,
+                      denomination_eligible_value_sats,
+                      usd_denom_outputs_count,
+                      usd_denom_value_sats,
+                      usd_denom_confidence_sum,
+                      sats_denom_outputs_count,
+                      sats_denom_value_sats,
+                      sats_denom_confidence_sum,
+                      unknown_denom_outputs_count,
+                      unknown_denom_value_sats,
+                      ambiguous_denom_outputs_count,
+                      ambiguous_denom_value_sats,
+                      likely_change_outputs_count,
+                      likely_change_value_sats
+                  ) <> 14
+            ),
+            count(*) FILTER (
+                WHERE LEAST(
+                    denomination_eligible_outputs_count,
+                    denomination_eligible_value_sats,
+                    usd_denom_outputs_count,
+                    usd_denom_value_sats,
+                    sats_denom_outputs_count,
+                    sats_denom_value_sats,
+                    unknown_denom_outputs_count,
+                    unknown_denom_value_sats,
+                    ambiguous_denom_outputs_count,
+                    ambiguous_denom_value_sats,
+                    likely_change_outputs_count,
+                    likely_change_value_sats
+                ) < 0
+            ),
+            count(*) FILTER (
+                WHERE denomination_eligible_outputs_count IS DISTINCT FROM
+                      COALESCE(usd_denom_outputs_count, 0) +
+                      COALESCE(sats_denom_outputs_count, 0) +
+                      COALESCE(unknown_denom_outputs_count, 0) +
+                      COALESCE(ambiguous_denom_outputs_count, 0)
+            ),
+            count(*) FILTER (
+                WHERE denomination_eligible_value_sats IS DISTINCT FROM
+                      COALESCE(usd_denom_value_sats, 0) +
+                      COALESCE(sats_denom_value_sats, 0) +
+                      COALESCE(unknown_denom_value_sats, 0) +
+                      COALESCE(ambiguous_denom_value_sats, 0)
+            ),
+            count(*) FILTER (
+                WHERE likely_change_outputs_count > unknown_denom_outputs_count
+                   OR likely_change_outputs_count < 0
+            ),
+            count(*) FILTER (
+                WHERE likely_change_value_sats > unknown_denom_value_sats
+                   OR likely_change_value_sats < 0
+            ),
+            count(*) FILTER (
+                WHERE usd_denom_confidence_sum < 0
+                   OR usd_denom_confidence_sum > usd_denom_outputs_count
+                   OR sats_denom_confidence_sum < 0
+                   OR sats_denom_confidence_sum > sats_denom_outputs_count
+            ),
+            count(*) FILTER (
+                WHERE num_nonnulls(
+                    btc_usd_price,
+                    btc_usd_price_low,
+                    btc_usd_price_high,
+                    btc_usd_price_source
+                ) NOT IN (0, 4)
+            ),
+            count(*) FILTER (
+                WHERE denomination_classifier_version = 'denomination-v2'
+                  AND (time AT TIME ZONE 'UTC')::date >= DATE '2009-01-07'
+                  AND btc_usd_price IS NULL
+            ),
+            count(*) FILTER (
+                WHERE btc_usd_price IS NOT NULL
+                  AND NOT (
+                      btc_usd_price NOT IN ('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)
+                      AND btc_usd_price_low NOT IN ('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)
+                      AND btc_usd_price_high NOT IN ('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)
+                      AND (
+                          (btc_usd_price = 0 AND btc_usd_price_low = 0 AND btc_usd_price_high = 0)
+                          OR (
+                              btc_usd_price > 0
+                              AND btc_usd_price_low > 0
+                              AND btc_usd_price_high > 0
+                              AND btc_usd_price_low <= btc_usd_price
+                              AND btc_usd_price <= btc_usd_price_high
+                          )
+                      )
+                  )
+            )
         FROM blocks
         WHERE network = {network_sql}
-          AND transactions_count <> jsonb_array_length(transaction_data)
-        UNION ALL
-        SELECT 'zero_tx_rows', count(*)
-        FROM blocks
-        WHERE network = {network_sql}
-          AND transactions_count = 0
+          {height_predicates}
     """)
-    for name, count_raw in rows:
+    summary.details.update({
+        "min_height": min_height,
+        "max_height": max_height,
+    })
+    if len(rows) != 1 or len(rows[0]) != len(check_names):
+        raise RuntimeError("unexpected SQL consistency result shape")
+    for name, count_raw in zip(check_names, rows[0]):
         count = int(count_raw)
         summary.fields_checked += 1
         summary.details[name] = count
@@ -471,25 +645,37 @@ def verify(
     chain_info = rpc.call("getblockchaininfo")
     resolved_network = network or CHAIN_TO_ENTERPRISE_NETWORK[chain_info["chain"]]
     active_height = int(chain_info["blocks"])
+    range_min = min_height if min_height is not None else 0
+    range_max = min(max_height if max_height is not None else active_height, active_height)
     summaries = []
-    rows = fetch_header_rows(psql, network=resolved_network, min_height=min_height, max_height=max_height)
-    headers = compare_header_rows(rpc=rpc, rows=rows, active_height=active_height, batch_size=batch_size)
+    rows = fetch_header_rows(psql, network=resolved_network, min_height=range_min, max_height=range_max)
+    headers = compare_header_rows(
+        rpc=rpc,
+        rows=rows,
+        min_height=range_min,
+        max_height=range_max,
+        batch_size=batch_size,
+    )
     headers.details.update({
         "network": resolved_network,
         "node_height": active_height,
+        "requested_min_height": min_height,
+        "requested_max_height": max_height,
         "headers": int(chain_info["headers"]),
         "pruned": bool(chain_info.get("pruned")),
         "pruneheight": chain_info.get("pruneheight"),
     })
+    if range_min > active_height:
+        headers.mismatches.append(Mismatch(None, "requested_min_above_node_tip", range_min, active_height))
+    if max_height is not None and max_height > active_height:
+        headers.mismatches.append(Mismatch(None, "requested_max_above_node_tip", max_height, active_height))
     summaries.append(headers)
 
     if check_body_tail and rows:
-        body_min = min_height if min_height is not None else rows[0]["height"]
+        body_min = range_min
         if chain_info.get("pruned"):
             body_min = max(body_min, int(chain_info["pruneheight"]))
-        body_max = min(rows[-1]["height"], active_height)
-        if max_height is not None:
-            body_max = min(body_max, max_height)
+        body_max = range_max
         if body_min <= body_max:
             body_rows = fetch_body_rows(psql, network=resolved_network, min_height=body_min, max_height=body_max)
             summaries.append(compare_body_rows(
@@ -500,7 +686,13 @@ def verify(
             ))
 
     if check_consistency:
-        summaries.append(check_sql_consistency(psql, network=resolved_network))
+        if range_min <= range_max:
+            summaries.append(check_sql_consistency(
+                psql,
+                network=resolved_network,
+                min_height=range_min,
+                max_height=range_max,
+            ))
     return summaries
 
 
@@ -534,13 +726,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--check-body-tail", action="store_true", help="Compare unpruned body totals using getblockstats.")
     parser.add_argument("--getblock-samples", type=int, default=0, help="Sample full getblock size/weight checks from the body range.")
-    parser.add_argument("--skip-sql-consistency", action="store_true", help="Skip transaction_data length consistency checks.")
+    parser.add_argument(
+        "--check-sql-consistency",
+        action="store_true",
+        help=(
+            "Scan transaction_data consistency only within --min-height/--max-height. "
+            "This is off by default because it reads TOAST data."
+        ),
+    )
     parser.add_argument("--max-mismatches", type=int, default=20)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.min_height is not None and args.min_height < 0:
+        raise SystemExit("--min-height must be non-negative")
+    if args.max_height is not None and args.max_height < 0:
+        raise SystemExit("--max-height must be non-negative")
+    if args.min_height is not None and args.max_height is not None and args.min_height > args.max_height:
+        raise SystemExit("--min-height cannot exceed --max-height")
     start = time.time()
     rpc_port = args.rpcport
     if rpc_port is None and args.datadir is not None:
@@ -567,7 +772,7 @@ def main() -> int:
         batch_size=args.batch_size,
         check_body_tail=args.check_body_tail,
         getblock_samples=args.getblock_samples,
-        check_consistency=not args.skip_sql_consistency,
+        check_consistency=args.check_sql_consistency,
     )
     print_summary(summaries, args.max_mismatches)
     print(f"elapsed_seconds={time.time() - start:.1f}")

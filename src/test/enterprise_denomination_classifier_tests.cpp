@@ -65,6 +65,21 @@ BOOST_AUTO_TEST_CASE(missing_price_window_is_unknown)
     BOOST_CHECK_EQUAL(result.sats_score, 0.0);
 }
 
+BOOST_AUTO_TEST_CASE(zero_price_window_is_unknown)
+{
+    const enterprise::DenominationPriceWindow zero_window{
+        .price = 0.0,
+        .low = 0.0,
+        .high = 0.0,
+        .source = "test-zero",
+    };
+    BOOST_CHECK(!zero_window.Valid());
+    const auto result{enterprise::ClassifyOutputDenomination(1'000'000, zero_window)};
+    BOOST_CHECK(result.category == enterprise::DenominationCategory::UNKNOWN);
+    BOOST_CHECK_EQUAL(result.usd_score, 0.0);
+    BOOST_CHECK_EQUAL(result.sats_score, 0.0);
+}
+
 BOOST_AUTO_TEST_CASE(applies_high_score_threshold)
 {
     const auto result{enterprise::ClassifyOutputDenomination(123'000, ExactWindow(37'123.0))};

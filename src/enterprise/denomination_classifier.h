@@ -8,7 +8,7 @@
 
 namespace enterprise {
 
-inline constexpr const char* DENOMINATION_CLASSIFIER_VERSION{"denomination-v1"};
+inline constexpr const char* DENOMINATION_CLASSIFIER_VERSION{"denomination-v2"};
 
 enum class DenominationCategory {
     USD,

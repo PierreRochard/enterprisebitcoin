@@ -5,6 +5,7 @@
 #include <coins.h>
 #include <consensus/amount.h>
 #include <consensus/tx_verify.h>
+#include <enterprise/pg.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <script/verify_flags.h>
@@ -51,11 +52,16 @@ struct TransactionData {
 
 class BlockToSql {
 public:
+    BlockToSql(enterprise::PgSession& session, pqxx::work& work, const CBlockIndex* block_index, const CBlock& block,
+               CCoinsViewCache& view, script_verify_flags flags, CCoinsViewCursor* cursor);
+    BlockToSql(enterprise::PgSession& session, pqxx::work& work, const CBlockIndex* block_index, const CBlock& block,
+               const CBlockUndo& undo, script_verify_flags flags);
     BlockToSql(const CBlockIndex *block_index, const CBlock &block, CCoinsViewCache &view, script_verify_flags flags,
                CCoinsViewCursor *cursor);
     BlockToSql(const CBlockIndex* block_index, const CBlock& block, const CBlockUndo& undo, script_verify_flags flags);
 };
 
 void DeleteBlockFromSql(const uint256& hash);
+void DeleteBlockFromSql(enterprise::PgSession& session, pqxx::work& work, const uint256& hash);
 
 #endif //BLOCK_TO_SQL_H

@@ -46,9 +46,11 @@ void CheckDelta(const EnterpriseBlockDelta& actual, const EnterpriseBlockDelta& 
 
 BOOST_FIXTURE_TEST_SUITE(enterprise_block_spool_tests, BasicTestingSetup)
 
-BOOST_AUTO_TEST_CASE(block_spool_preserves_capture_order_across_restarts)
+BOOST_AUTO_TEST_CASE(capture_order_restarts)
 {
-    const fs::path spool_dir{m_args.GetDataDirBase() / "enterprise_block_spool_tests"};
+    // Keep this path short enough for the temporary suffix and spool filename
+    // to stay below MAX_PATH on Windows.
+    const fs::path spool_dir{m_args.GetDataDirBase() / "spool"};
 
     const std::vector<EnterpriseBlockDelta> expected{
         MakeDelta(EnterpriseSpoolEventType::CONNECT, 20, 2, "index"),
