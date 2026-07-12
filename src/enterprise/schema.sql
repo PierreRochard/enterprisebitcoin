@@ -1,3 +1,7 @@
+-- DESTRUCTIVE FRESH-DATABASE BOOTSTRAP ONLY.
+-- To preserve an existing PostgreSQL 17 database, use the additive migration
+-- in src/enterprise/migrations/20260711_pg17_reuse_v1.sql instead.
+
 DROP TABLE IF EXISTS blocks CASCADE;
 DROP TABLE IF EXISTS mempool_entries CASCADE;
 
@@ -131,6 +135,9 @@ CREATE TABLE IF NOT EXISTS enterprise_block_ingest
     PRIMARY KEY (network, hash, event_type)
 );
 
+CREATE INDEX IF NOT EXISTS enterprise_block_ingest_monitor_idx
+    ON enterprise_block_ingest (network, source, status, height);
+
 CREATE TABLE IF NOT EXISTS enterprise_block_gaps
 (
     network                                          TEXT NOT NULL,
@@ -143,6 +150,21 @@ CREATE TABLE IF NOT EXISTS enterprise_block_gaps
     updated_at                                       timestamp with time zone NOT NULL DEFAULT now(),
     PRIMARY KEY (network, height)
 );
+
+CREATE TABLE IF NOT EXISTS enterprise_schema_migrations
+(
+    version     TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    applied_at  timestamp with time zone NOT NULL DEFAULT now(),
+    applied_by  TEXT NOT NULL DEFAULT SESSION_USER
+);
+
+INSERT INTO enterprise_schema_migrations (version, description)
+VALUES (
+    '20260711_pg17_reuse_v1',
+    'Additive PostgreSQL 17 reuse schema for enterprise denomination backfill'
+)
+ON CONFLICT (version) DO NOTHING;
 
 CREATE TABLE mempool_entries
 (

@@ -32,26 +32,41 @@ Linux:
 
 ```shell
 sudo apt-get update
-sudo apt-get install build-essential cmake ninja-build pkg-config libpq-dev libpqxx-dev
+sudo apt-get install build-essential cmake ninja-build pkg-config libpq-dev libpqxx-dev zlib1g-dev
 ```
+
+Windows:
+
+Install Visual Studio 2026 with the Desktop development with C++ workload,
+CMake, and vcpkg. Install PostgreSQL when a local server or the `psql` client is
+needed. The vcpkg manifest supplies libpqxx, libpq, zlib, and their runtime
+dependencies.
 
 Database
 ==
 
-Create a PostgreSQL user and database, then load the schemas:
+As a PostgreSQL administrator, create a dedicated login that owns its database:
 
 ```postgresql
-CREATE USER USER WITH ENCRYPTED PASSWORD 'PASSWORD';
-GRANT pg_read_all_data TO USER;
-GRANT pg_write_all_data TO USER;
-ALTER USER USER CREATEDB;
-CREATE DATABASE bitcoin;
+CREATE ROLE enterprisebitcoin LOGIN PASSWORD 'PASSWORD';
+CREATE DATABASE enterprisebitcoin OWNER enterprisebitcoin;
 ```
 
+Connect as `enterprisebitcoin` to load the block schema. Load the UTXO schema
+only when periodic UTXO exports are needed:
+
 ```shell
-psql bitcoin < src/enterprise/schema.sql
-psql bitcoin < src/enterprise/utxo_stats_schemas.sql
+psql -X -v ON_ERROR_STOP=1 -U enterprisebitcoin -d enterprisebitcoin -f src/enterprise/schema.sql
+psql -X -v ON_ERROR_STOP=1 -U enterprisebitcoin -d enterprisebitcoin -f src/enterprise/utxo_stats_schemas.sql
 ```
+
+`schema.sql` drops and recreates the `blocks` and `mempool_entries` tables. Run
+it only as a fresh-database bootstrap or when an intentional reset is
+acceptable. It records the current enterprise schema marker and keeps `prices`
+as an ordinary table. To preserve and reuse an existing PostgreSQL 17 database,
+run `src/enterprise/migrations/20260711_pg17_reuse_v1.sql` through the guarded
+Windows rollout documented in `doc/enterprise-pg17-windows.md`; never load
+`schema.sql` into that reused database.
 
 The exporter reads connection settings from a dotenv-style file. By default it
 keeps backwards compatibility with `.env` in the working directory, then lets
@@ -71,8 +86,8 @@ block export. A zero source price is preserved as zero but is not a valid
 classification window, so its eligible outputs remain unknown.
 
 ```shell
-PGDB=bitcoin
-PGUSER=USER
+PGDB=enterprisebitcoin
+PGUSER=enterprisebitcoin
 PGPASSWORD=PASSWORD
 PGHOST=127.0.0.1
 PGPORT=5432
@@ -88,3 +103,28 @@ cmake -S . -B build -GNinja \
   -DWITH_ENTERPRISE_SQL=ON
 cmake --build build --target bitcoind
 ```
+
+On Windows, launch a Visual Studio developer PowerShell, set `VCPKG_ROOT`, and
+use the checked-in Visual Studio preset:
+
+```powershell
+$env:VCPKG_ROOT = 'C:\Program Files\Microsoft Visual Studio\18\Insiders\VC\vcpkg'
+cmake -B build-windows-enterprise --preset vs2026 `
+  -DVCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON `
+  '-DVCPKG_MANIFEST_FEATURES=tests;enterprise-sql' `
+  -DBUILD_GUI=OFF `
+  -DENABLE_WALLET=OFF `
+  -DWITH_ZMQ=OFF `
+  -DWITH_ENTERPRISE_SQL=ON
+cmake --build build-windows-enterprise --config Release `
+  --target bitcoind bitcoin-cli test_bitcoin --parallel
+ctest --test-dir build-windows-enterprise -C Release --output-on-failure --parallel
+cmake --install build-windows-enterprise --config Release `
+  --prefix build-windows-enterprise/stage
+```
+
+vcpkg stages the required PostgreSQL, OpenSSL, and zlib DLLs beside the Release
+executables in `build-windows-enterprise/bin/Release` and in the install prefix.
+The dynamic `vs2026` preset also requires the matching Microsoft Visual C++ x64
+Redistributable on the target host. Use `vs2026-static` when distributing to a
+host where that runtime is not already installed.

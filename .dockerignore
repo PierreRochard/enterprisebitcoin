@@ -1,9 +1,14 @@
 .git
 .DS_Store
 .env
+.runtime
+.agents
 .idea
+.tx
+.vscode
 addresses
 build
+build-*
 build_*
 cmake-build-*
 autom4te.cache

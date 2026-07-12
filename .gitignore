@@ -20,6 +20,7 @@
 
 # Enterprise SQL local configuration and runtime spool records.
 /.env
+/.runtime/
 enterprise.env
 *.ebd
 *.ebd.tmp
