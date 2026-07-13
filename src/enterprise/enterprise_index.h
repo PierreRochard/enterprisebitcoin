@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -41,7 +42,9 @@ private:
     uint64_t m_writer_wakeup_generation{0};
     uint64_t m_spool_max_bytes{0};
     int m_backfill_height{static_cast<int>(DEFAULT_ENTERPRISE_BACKFILL_HEIGHT)};
+    int m_price_finalization_lookback{DEFAULT_ENTERPRISE_PRICE_FINALIZATION_LOOKBACK};
     bool m_reindex_with_pending_spool{false};
+    std::set<std::pair<int, std::string>> m_price_finalization_deferred;
 
     bool AllowPrune() const override { return true; }
 
@@ -55,10 +58,12 @@ private:
     bool ProcessCoveredSpoolFile(enterprise::PgSession& session, const fs::path& path, const EnterpriseBlockSpoolFileInfo& info);
     bool ProcessSpoolFile(enterprise::PgSession& session, const fs::path& path, ConnectRowCoverage coverage = ConnectRowCoverage::CHECK);
     bool ReconcileGaps();
+    bool FinalizeAvailablePrices(enterprise::PgSession& session);
     bool QueueLocalBackfill(const CBlockIndex& block_index);
     std::string IngestSource(const EnterpriseBlockDelta& delta) const;
 
     NodeClock::time_point m_next_gap_scan{};
+    NodeClock::time_point m_next_price_finalization_scan{};
 
 protected:
     void BlockDisconnected(const std::shared_ptr<const CBlock>& block, const CBlockIndex* pindex) override;

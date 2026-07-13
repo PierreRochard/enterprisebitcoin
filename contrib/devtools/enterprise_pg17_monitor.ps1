@@ -54,25 +54,48 @@ WITH ingest_progress AS (
         ON blocks.network = ingest.network AND blocks.height = ingest.height
      WHERE ingest.network = 'mainnet'
        AND blocks.denomination_classifier_version = 'denomination-v2'
+), available_price_days AS (
+    SELECT CASE
+               WHEN pg_catalog.pg_typeof(prices.day)::text = 'timestamp with time zone'
+                   THEN (prices.day::timestamp with time zone AT TIME ZONE 'UTC')::date
+               ELSE prices.day::timestamp without time zone::date
+           END AS utc_day
+      FROM public.prices AS prices
+     WHERE prices.price IS NOT NULL
+), price_frontier AS (
+    SELECT min(utc_day) AS first_available_day,
+           max(utc_day) AS available_through_day
+      FROM available_price_days
 ), priced_null_tail AS (
-    SELECT count(*) AS row_count
+    SELECT count(*) FILTER (
+               WHERE price_frontier.first_available_day IS NOT NULL
+                 AND (blocks.time AT TIME ZONE 'UTC')::date
+                     BETWEEN price_frontier.first_available_day
+                         AND price_frontier.available_through_day
+           ) AS overdue_row_count,
+           count(*) FILTER (
+               WHERE price_frontier.available_through_day IS NULL
+                  OR (blocks.time AT TIME ZONE 'UTC')::date > price_frontier.available_through_day
+           ) AS pending_row_count
       FROM public.blocks AS blocks
       CROSS JOIN ingest_progress
+      CROSS JOIN price_frontier
      WHERE ingest_progress.processed_height IS NOT NULL
        AND blocks.network = 'mainnet'
        AND blocks.height BETWEEN greatest(0, ingest_progress.processed_height - 2047)
                              AND ingest_progress.processed_height
-       AND blocks.time >= TIMESTAMP WITH TIME ZONE '2009-01-07 00:00:00+00'
        AND blocks.denomination_classifier_version = 'denomination-v2'
        AND blocks.btc_usd_price IS NULL
 )
 SELECT pg_catalog.pg_database_size(current_database())::text || '|' ||
        COALESCE((SELECT height FROM public.blocks WHERE network = 'mainnet' ORDER BY height DESC LIMIT 1)::text, '') || '|' ||
-       COALESCE((SELECT max(day)::text FROM public.prices), '') || '|' ||
+       COALESCE(price_frontier.first_available_day::text, '') || '|' ||
+       COALESCE(price_frontier.available_through_day::text, '') || '|' ||
        COALESCE(ingest_progress.backfill_height::text, '') || '|' ||
        COALESCE(ingest_progress.processed_height::text, '') || '|' ||
        (SELECT count(*) FROM public.prices WHERE price IS NULL)::text || '|' ||
-       priced_null_tail.row_count::text || '|' ||
+       priced_null_tail.overdue_row_count::text || '|' ||
+       priced_null_tail.pending_row_count::text || '|' ||
        (SELECT count(*) FROM public.enterprise_block_ingest
          WHERE network = 'mainnet' AND status = 'failed')::text || '|' ||
        (SELECT count(*) FROM public.enterprise_block_ingest
@@ -82,24 +105,26 @@ SELECT pg_catalog.pg_database_size(current_database())::text || '|' ||
        pg_catalog.pg_current_wal_lsn()::text || '|' ||
        (SELECT count(*) FROM pg_catalog.pg_stat_activity
          WHERE datname = current_database() AND application_name = 'enterprise-bitcoind')::text
-  FROM ingest_progress CROSS JOIN priced_null_tail;
+  FROM ingest_progress CROSS JOIN price_frontier CROSS JOIN priced_null_tail;
 '@
     $line = ((Invoke-EnterprisePsql -Psql $psql -Sql $sql -TuplesOnly) -join '').Trim()
     $parts = $line.Split('|')
-    if ($parts.Count -ne 12) { throw 'Could not parse PostgreSQL monitor metrics.' }
+    if ($parts.Count -ne 14) { throw 'Could not parse PostgreSQL monitor metrics.' }
     return [ordered]@{
         database_bytes = [int64] $parts[0]
         sql_max_height = if ($parts[1]) { [int64] $parts[1] } else { $null }
-        latest_price_day = $parts[2]
-        backfill_succeeded_height = if ($parts[3]) { [int64] $parts[3] } else { $null }
-        processed_height = if ($parts[4]) { [int64] $parts[4] } else { $null }
-        prices_null_rows = [int64] $parts[5]
-        processed_price_null_tail = [int64] $parts[6]
-        failed_ingests = [int64] $parts[7]
-        started_ingests = [int64] $parts[8]
-        unresolved_gaps = [int64] $parts[9]
-        wal_lsn = $parts[10]
-        node_database_sessions = [int] $parts[11]
+        first_available_price_day = $parts[2]
+        available_price_through_day = $parts[3]
+        backfill_succeeded_height = if ($parts[4]) { [int64] $parts[4] } else { $null }
+        processed_height = if ($parts[5]) { [int64] $parts[5] } else { $null }
+        prices_null_rows = [int64] $parts[6]
+        processed_price_null_overdue_tail = [int64] $parts[7]
+        processed_price_null_pending_tail = [int64] $parts[8]
+        failed_ingests = [int64] $parts[9]
+        started_ingests = [int64] $parts[10]
+        unresolved_gaps = [int64] $parts[11]
+        wal_lsn = $parts[12]
+        node_database_sessions = [int] $parts[13]
     }
 }
 
@@ -166,12 +191,18 @@ try {
         $spoolMiB = [math]::Round($sample.spool_bytes / 1MB, 2)
         Write-Output "[$($sample.timestamp_utc)] C: free=${freeGiB}GiB spool=${spoolMiB}MiB files=$($sample.spool_files)"
         if ($sample.sql) {
-            Write-Output "SQL max=$($sample.sql.sql_max_height) backfill=$($sample.sql.backfill_succeeded_height) processed=$($sample.sql.processed_height) failed=$($sample.sql.failed_ingests) gaps=$($sample.sql.unresolved_gaps) price=$($sample.sql.latest_price_day)"
+            Write-Output "SQL max=$($sample.sql.sql_max_height) backfill=$($sample.sql.backfill_succeeded_height) processed=$($sample.sql.processed_height) failed=$($sample.sql.failed_ingests) gaps=$($sample.sql.unresolved_gaps) price_frontier=$($sample.sql.first_available_price_day)..$($sample.sql.available_price_through_day) overdue_price_nulls=$($sample.sql.processed_price_null_overdue_tail) pending_price_nulls=$($sample.sql.processed_price_null_pending_tail)"
             if ($sample.sql.prices_null_rows -ne 0) {
                 Write-Warning "prices contains $($sample.sql.prices_null_rows) NULL price rows."
             }
-            if ($sample.sql.processed_price_null_tail -ne 0) {
-                Write-Warning "The latest processed height window contains $($sample.sql.processed_price_null_tail) blocks on/after 2009-01-07 with NULL btc_usd_price."
+            if (-not $sample.sql.available_price_through_day) {
+                Write-Warning 'public.prices has no non-NULL price frontier.'
+            }
+            if ($sample.sql.processed_price_null_overdue_tail -ne 0) {
+                Write-Warning "OVERDUE PRICE COVERAGE: the latest processed height window contains $($sample.sql.processed_price_null_overdue_tail) blocks with NULL btc_usd_price on or before the available price frontier $($sample.sql.available_price_through_day)."
+            }
+            if ($sample.sql.processed_price_null_pending_tail -ne 0) {
+                Write-Output "PENDING PRICE COVERAGE: the latest processed height window contains $($sample.sql.processed_price_null_pending_tail) blocks newer than the available price frontier $($sample.sql.available_price_through_day)."
             }
         } elseif ($sample.sql_error) { Write-Warning $sample.sql_error }
         if ($sample.node) {

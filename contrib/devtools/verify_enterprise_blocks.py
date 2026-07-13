@@ -505,10 +505,23 @@ def check_sql_consistency(
         "likely_change_value_mismatches",
         "confidence_mismatches",
         "partial_price_windows",
-        "missing_prices_after_first_day",
+        "overdue_missing_prices",
         "invalid_price_windows",
     ]
     rows = psql.query_rows(f"""
+        WITH available_price_days AS (
+            SELECT CASE
+                       WHEN pg_catalog.pg_typeof(prices.day)::text = 'timestamp with time zone'
+                           THEN (prices.day::timestamp with time zone AT TIME ZONE 'UTC')::date
+                       ELSE prices.day::timestamp without time zone::date
+                   END AS utc_day
+              FROM public.prices AS prices
+             WHERE prices.price IS NOT NULL
+        ), price_frontier AS (
+            SELECT min(utc_day) AS first_available_day,
+                   max(utc_day) AS available_through_day
+              FROM available_price_days
+        )
         SELECT
             count(*) FILTER (
                 WHERE transactions_count IS DISTINCT FROM jsonb_array_length(transaction_data)
@@ -590,8 +603,11 @@ def check_sql_consistency(
             ),
             count(*) FILTER (
                 WHERE denomination_classifier_version = 'denomination-v2'
-                  AND (time AT TIME ZONE 'UTC')::date >= DATE '2009-01-07'
                   AND btc_usd_price IS NULL
+                  AND price_frontier.first_available_day IS NOT NULL
+                  AND (time AT TIME ZONE 'UTC')::date
+                      BETWEEN price_frontier.first_available_day
+                          AND price_frontier.available_through_day
             ),
             count(*) FILTER (
                 WHERE btc_usd_price IS NOT NULL
@@ -610,8 +626,19 @@ def check_sql_consistency(
                           )
                       )
                   )
-            )
-        FROM blocks
+            ),
+            count(*) FILTER (
+                WHERE denomination_classifier_version = 'denomination-v2'
+                  AND btc_usd_price IS NULL
+                  AND (
+                      price_frontier.available_through_day IS NULL
+                      OR (time AT TIME ZONE 'UTC')::date > price_frontier.available_through_day
+                  )
+            ),
+            COALESCE((SELECT first_available_day::text FROM price_frontier), ''),
+            COALESCE((SELECT available_through_day::text FROM price_frontier), '')
+        FROM public.blocks
+        CROSS JOIN price_frontier
         WHERE network = {network_sql}
           {height_predicates}
     """)
@@ -619,14 +646,21 @@ def check_sql_consistency(
         "min_height": min_height,
         "max_height": max_height,
     })
-    if len(rows) != 1 or len(rows[0]) != len(check_names):
+    expected_columns = len(check_names) + 3
+    if len(rows) != 1 or len(rows[0]) != expected_columns:
         raise RuntimeError("unexpected SQL consistency result shape")
-    for name, count_raw in zip(check_names, rows[0]):
+    for name, count_raw in zip(check_names, rows[0][:len(check_names)]):
         count = int(count_raw)
         summary.fields_checked += 1
         summary.details[name] = count
         if count:
             summary.mismatches.append(Mismatch(None, name, count, 0))
+    summary.fields_checked += 1
+    summary.details.update({
+        "pending_missing_prices": int(rows[0][len(check_names)]),
+        "first_available_price_day": rows[0][len(check_names) + 1] or None,
+        "available_price_through_day": rows[0][len(check_names) + 2] or None,
+    })
     return summary
 
 
@@ -730,8 +764,9 @@ def parse_args() -> argparse.Namespace:
         "--check-sql-consistency",
         action="store_true",
         help=(
-            "Scan transaction_data consistency only within --min-height/--max-height. "
-            "This is off by default because it reads TOAST data."
+            "Check bounded SQL, classifier, and price-frontier consistency only within "
+            "--min-height/--max-height. This is off by default because transaction_data "
+            "checks read TOAST data."
         ),
     )
     parser.add_argument("--max-mismatches", type=int, default=20)

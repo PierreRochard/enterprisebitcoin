@@ -384,20 +384,21 @@ DenominationBlockStats CalculateDenominationBlockStats(
     return stats;
 }
 
-void UpdateBlockDenomination(
+bool WriteBlockDenomination(
     enterprise::PgSession& session,
     pqxx::work& w,
     const std::string& network,
     int height,
     const uint256& hash,
     const std::optional<enterprise::DenominationPriceWindow>& price_window,
-    const DenominationBlockStats& stats)
+    const DenominationBlockStats& stats,
+    bool finalize_missing_price)
 {
     const std::string price{price_window ? DoubleSqlParam(price_window->price) : ""};
     const std::string price_low{price_window ? DoubleSqlParam(price_window->low) : ""};
     const std::string price_high{price_window ? DoubleSqlParam(price_window->high) : ""};
     const std::string price_source{price_window ? price_window->source : ""};
-    session.Prepare("EnterpriseUpdateBlockDenomination", R"sql(
+    std::string sql{R"sql(
         UPDATE blocks SET
             btc_usd_price = NULLIF($1::text, '')::double precision,
             btc_usd_price_low = NULLIF($2::text, '')::double precision,
@@ -421,12 +422,23 @@ void UpdateBlockDenomination(
         WHERE network = $20
           AND height = $21
           AND hash = $22
-          AND denomination_classifier_version IS DISTINCT FROM $19
-        RETURNING 1
-    )sql");
+    )sql"};
+    if (finalize_missing_price) {
+        sql += R"sql(
+          AND denomination_classifier_version = $19
+          AND btc_usd_price IS NULL
+        )sql";
+    } else {
+        sql += "          AND denomination_classifier_version IS DISTINCT FROM $19\n";
+    }
+    sql += "        RETURNING 1";
+
+    const char* statement_name{
+        finalize_missing_price ? "EnterpriseFinalizeBlockDenominationPrice" : "EnterpriseUpdateBlockDenomination"};
+    session.Prepare(statement_name, sql);
     const auto updated{enterprise::ExecPrepared(
         w,
-        "EnterpriseUpdateBlockDenomination",
+        statement_name,
         price,
         price_low,
         price_high,
@@ -449,7 +461,27 @@ void UpdateBlockDenomination(
         network,
         height,
         hash.GetHex())};
-    if (updated.size() != 1) {
+    return updated.size() == 1;
+}
+
+void UpdateBlockDenomination(
+    enterprise::PgSession& session,
+    pqxx::work& w,
+    const std::string& network,
+    int height,
+    const uint256& hash,
+    const std::optional<enterprise::DenominationPriceWindow>& price_window,
+    const DenominationBlockStats& stats)
+{
+    if (!WriteBlockDenomination(
+            session,
+            w,
+            network,
+            height,
+            hash,
+            price_window,
+            stats,
+            /*finalize_missing_price=*/false)) {
         throw std::runtime_error("enterprise denomination backfill row changed while it was being classified");
     }
 }
@@ -484,6 +516,31 @@ bool HandleBoundedHistoricalBlock(
 }
 
 } // namespace
+
+PriceFinalizationResult FinalizeBlockDenominationPrice(
+    enterprise::PgSession& session,
+    pqxx::work& work,
+    const CBlockIndex& block_index,
+    const CBlock& block)
+{
+    const std::optional<enterprise::DenominationPriceWindow> price_window{
+        LoadDenominationPriceWindow(session, work, block_index.GetBlockTime())};
+    if (!price_window) return PriceFinalizationResult::PRICE_UNAVAILABLE;
+
+    const DenominationBlockStats stats{CalculateDenominationBlockStats(block, price_window)};
+    if (!WriteBlockDenomination(
+            session,
+            work,
+            ChainToString(),
+            block_index.nHeight,
+            block.GetHash(),
+            price_window,
+            stats,
+            /*finalize_missing_price=*/true)) {
+        return PriceFinalizationResult::NOT_PENDING;
+    }
+    return PriceFinalizationResult::UPDATED;
+}
 
 void DeleteBlockFromSql(const uint256& hash)
 {

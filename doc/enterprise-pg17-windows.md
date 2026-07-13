@@ -123,9 +123,36 @@ Monitor once, then start the watch loop. Supplying `-EnableStop` requires the
 exact resolved datadir confirmation and allows only a graceful `bitcoin-cli
 stop` below 100 GiB free. The monitor warns below 150 GiB, records node, SQL,
 price, WAL, ingest, gap, and spool metrics, and never deletes database or spool
-files. Each sample also rejects NULL rows in `prices` and checks a bounded tail
-of processed blocks for missing `btc_usd_price` on or after 2009-01-07; blocks
-before the first available price day may remain NULL.
+files. Each sample also warns about NULL rows in `prices` and derives the
+available price frontier from the first and last UTC days with a non-NULL
+`public.prices.price`. In the bounded processed-block tail, a NULL
+`btc_usd_price` from the covered interval is reported as overdue. A NULL newer
+than the last available UTC price day is reported as pending rather than as an
+acceptance failure. Blocks before the first available price day may remain
+NULL.
+
+Final acceptance applies the same frontier to the requested verification
+height range: overdue price NULLs on or before the available frontier fail
+`verify_enterprise_blocks.py --check-sql-consistency`, while pending NULLs
+newer than the frontier are counted in its summary but do not fail acceptance.
+The enterprise writer treats a non-NULL `public.prices` row as the source's
+finality signal. Once per minute, after the durable block spool drains, it
+scans the most recent 2,016 active-chain heights for matching
+`denomination-v2` rows with NULL prices. It reads each retained block,
+recomputes all 19 price and denomination fields, and commits the guarded block
+update together with a separate succeeded `price-finalization` ingest record.
+The NULL block row itself is the durable retry queue, so a PostgreSQL outage or
+unknown commit outcome cannot lose the work.
+
+The default scan is intentionally bounded to roughly two weeks and cannot
+recover block data already removed by pruning. If an outage leaves an overdue
+row outside that range, use a node that still retains or has redownloaded the
+required blocks and explicitly increase
+`-enterprisepricefinalizationlookback=<blocks>`. A plain `-reindex` is not a
+substitute: matching rows already marked `denomination-v2` are otherwise
+considered covered and skipped. Never patch only the four price columns because
+the denomination aggregates must be recomputed from the block at the same
+time.
 
 ```powershell
 pwsh -NoProfile -File contrib/devtools/enterprise_pg17_monitor.ps1 -Action Once -BitcoinCliPath <artifact-bitcoin-cli.exe>

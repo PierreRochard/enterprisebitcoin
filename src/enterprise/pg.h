@@ -74,6 +74,17 @@ void ReconcileCoveredIngest(PgSession& session, pqxx::work& work, const Enterpri
 [[nodiscard]] bool BlockRowCovered(int height, const uint256& expected_hash, int backfill_height);
 [[nodiscard]] std::vector<BlockRowKey> FindCoveredBlockRows(const std::vector<BlockRowKey>& rows, int backfill_height);
 [[nodiscard]] std::vector<BlockRowKey> FindCoveredBlockRows(pqxx::work& work, const std::vector<BlockRowKey>& rows, int backfill_height);
+[[nodiscard]] std::vector<BlockRowKey> FindPriceFinalizationCandidates(
+    PgSession& session,
+    pqxx::work& work,
+    int min_height,
+    int max_height,
+    std::size_t limit);
+void MarkPriceFinalizationSucceeded(
+    PgSession& session,
+    pqxx::work& work,
+    int height,
+    const uint256& hash);
 void MarkGapQueued(int height, const uint256& expected_hash, const std::string& source);
 void MarkGapResolved(int height, const uint256& expected_hash, const std::string& source);
 void MarkGapUnavailable(int height, const uint256& expected_hash, const std::string& source, const std::string& error);

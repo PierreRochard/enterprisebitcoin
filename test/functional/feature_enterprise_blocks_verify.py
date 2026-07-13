@@ -640,6 +640,171 @@ class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
                 ON CONFLICT (day) DO UPDATE SET price = EXCLUDED.price;
                 REFRESH MATERIALIZED VIEW public.prices;
             """)
+
+        self.log.info("Verify current-day missing prices are finalized without replaying the block")
+        self.wait_for_spool_empty()
+        finalization_time = int(time.time())
+        finalization_day = datetime.fromtimestamp(finalization_time, tz=timezone.utc).date()
+        self.psql.query(f"""
+            DELETE FROM enterprise_test_price_source
+            WHERE day = DATE '{finalization_day.isoformat()}';
+            REFRESH MATERIALIZED VIEW public.prices;
+        """)
+        try:
+            node.setmocktime(finalization_time)
+            # 3,900 sats is exactly $1.95 at $50k/BTC while carrying no
+            # competing round-sats score, so finalization deterministically
+            # moves it from UNKNOWN to USD.
+            denomination_value = 3900
+            selected_utxo = wallet.get_utxo(mark_as_spent=False)
+            selected_value = int(selected_utxo["value"] * Decimal(100_000_000))
+            finalization_fee = 1001
+            while (selected_value - denomination_value - finalization_fee) % 10 == 0:
+                finalization_fee += 1
+            finalization_tx = wallet.send_to(
+                from_node=node,
+                scriptPubKey=wallet.get_output_script(),
+                amount=denomination_value,
+                fee=finalization_fee,
+            )
+            finalization_change = finalization_tx["tx"].vout[0].nValue
+            assert_greater_than(finalization_change, 2_100_000)
+            assert finalization_change % 10 != 0
+            assert_equal(finalization_tx["tx"].vout[1].nValue, denomination_value)
+
+            finalization_hash = self.generate(node, 1)[0]
+            finalization_height = node.getblockcount()
+            self.wait_for_enterprise_height(finalization_height)
+            self.wait_for_spool_empty()
+            assert_equal(
+                datetime.fromtimestamp(
+                    node.getblockheader(finalization_hash)["time"],
+                    tz=timezone.utc,
+                ).date(),
+                finalization_day,
+            )
+            finalization_tip_hash = node.getbestblockhash()
+            finalization_tip_height = node.getblockcount()
+
+            initial_finalization_rows = self.psql.query_rows(f"""
+                SELECT xmin::text, {", ".join(DENOMINATION_COLUMNS)}
+                FROM blocks
+                WHERE network = 'regtest'
+                  AND height = {finalization_height}
+                  AND hash = '{finalization_hash}'
+            """)
+            assert_equal(len(initial_finalization_rows), 1)
+            initial_finalization_row = initial_finalization_rows[0]
+            initial_finalization_xmin = initial_finalization_row[0]
+            initial_finalization_values = initial_finalization_row[1:]
+            original_connect_ingest = self.sql_scalar(f"""
+                SELECT concat(xmin::text, ',', source, ',', status)
+                FROM enterprise_block_ingest
+                WHERE network = 'regtest'
+                  AND hash = '{finalization_hash}'
+                  AND event_type = 'connect'
+            """)
+            assert original_connect_ingest.endswith(",denomination-backfill,succeeded")
+            assert_equal(initial_finalization_values[0:4], ["", "", "", ""])
+            assert_equal(int(initial_finalization_values[4]), 2)
+            assert_equal(
+                int(initial_finalization_values[5]),
+                finalization_change + denomination_value,
+            )
+            for index in [6, 7, 8, 9, 10, 11, 14, 15, 16, 17]:
+                assert_approx(float(initial_finalization_values[index]), 0.0)
+            assert_equal(int(initial_finalization_values[12]), 2)
+            assert_equal(
+                int(initial_finalization_values[13]),
+                finalization_change + denomination_value,
+            )
+            assert_equal(initial_finalization_values[18], "denomination-v2")
+
+            self.psql.query(f"""
+                INSERT INTO enterprise_test_price_source(day, price)
+                VALUES (DATE '{finalization_day.isoformat()}', 50000)
+                ON CONFLICT (day) DO UPDATE SET price = EXCLUDED.price;
+                REFRESH MATERIALIZED VIEW public.prices;
+            """)
+            # Advance only the node clock past the bounded scan cadence; no
+            # chain event is emitted and PostgreSQL retains its real clock.
+            node.setmocktime(finalization_time + 300)
+
+            # No connect/disconnect notification follows the price refresh.
+            # The writer must discover and finalize this already-committed row.
+            self.wait_until(lambda: self.sql_scalar(f"""
+                SELECT count(*)
+                FROM blocks block_row
+                JOIN enterprise_block_ingest ingest_row
+                  ON ingest_row.network = block_row.network
+                 AND ingest_row.hash = block_row.hash
+                 AND ingest_row.event_type = 'price-finalization'
+                WHERE block_row.network = 'regtest'
+                  AND block_row.height = {finalization_height}
+                  AND block_row.hash = '{finalization_hash}'
+                  AND block_row.btc_usd_price = 50000
+                  AND ingest_row.source = 'price-finalization'
+                  AND ingest_row.status = 'succeeded'
+                  AND ingest_row.completed_at IS NOT NULL
+                  AND ingest_row.last_error IS NULL
+            """) == "1", timeout=180)
+
+            assert_equal(node.getblockcount(), finalization_tip_height)
+            assert_equal(node.getbestblockhash(), finalization_tip_hash)
+            assert_equal(self.sql_scalar(f"""
+                SELECT concat(xmin::text, ',', source, ',', status)
+                FROM enterprise_block_ingest
+                WHERE network = 'regtest'
+                  AND hash = '{finalization_hash}'
+                  AND event_type = 'connect'
+            """), original_connect_ingest)
+            finalized_rows = self.psql.query_rows(f"""
+                SELECT block_row.xmin::text,
+                       ingest_row.xmin::text,
+                       {", ".join(f"block_row.{column}" for column in DENOMINATION_COLUMNS)}
+                FROM blocks block_row
+                JOIN enterprise_block_ingest ingest_row
+                  ON ingest_row.network = block_row.network
+                 AND ingest_row.hash = block_row.hash
+                 AND ingest_row.event_type = 'price-finalization'
+                WHERE block_row.network = 'regtest'
+                  AND block_row.height = {finalization_height}
+                  AND block_row.hash = '{finalization_hash}'
+                  AND ingest_row.source = 'price-finalization'
+                  AND ingest_row.status = 'succeeded'
+            """)
+            assert_equal(len(finalized_rows), 1)
+            finalized_row = finalized_rows[0]
+            assert finalized_row[0] != initial_finalization_xmin
+            assert_equal(finalized_row[0], finalized_row[1])
+            finalized_values = finalized_row[2:]
+            assert_approx(float(finalized_values[0]), 50000.0)
+            assert_approx(float(finalized_values[1]), 48750.0)
+            assert_approx(float(finalized_values[2]), 51250.0)
+            assert_equal(finalized_values[3], "prices.price:fallback_2_5pct")
+            assert_equal(int(finalized_values[4]), 2)
+            assert_equal(
+                int(finalized_values[5]),
+                finalization_change + denomination_value,
+            )
+            assert_equal(int(finalized_values[6]), 1)
+            assert_equal(int(finalized_values[7]), denomination_value)
+            assert_approx(float(finalized_values[8]), 1.0)
+            for index in [9, 10, 11, 14, 15]:
+                assert_approx(float(finalized_values[index]), 0.0)
+            assert_equal(int(finalized_values[12]), 1)
+            assert_equal(int(finalized_values[13]), finalization_change)
+            assert_equal(int(finalized_values[16]), 1)
+            assert_equal(int(finalized_values[17]), finalization_change)
+            assert_equal(finalized_values[18], "denomination-v2")
+        finally:
+            node.setmocktime(0)
+            self.psql.query(f"""
+                INSERT INTO enterprise_test_price_source(day, price)
+                VALUES (DATE '{finalization_day.isoformat()}', 50000)
+                ON CONFLICT (day) DO UPDATE SET price = EXCLUDED.price;
+                REFRESH MATERIALIZED VIEW public.prices;
+            """)
         tip_height = node.getblockcount()
 
         self.log.info("Run the reusable RPC-vs-Postgres verifier successfully")

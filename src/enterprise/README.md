@@ -85,6 +85,24 @@ eligible non-coinbase outputs are exported as unknown rather than failing the
 block export. A zero source price is preserved as zero but is not a valid
 classification window, so its eligible outputs remain unknown.
 
+Operational price checks use the first and last UTC days with a non-NULL
+`public.prices.price` as the available price frontier. Within that covered
+interval, a classified block with NULL `btc_usd_price` is overdue and fails
+acceptance verification. A block newer than the available frontier is reported
+as pending, not failed, until the price source advances; blocks before the first
+available price day remain allowed to be unpriced.
+
+The asynchronous writer permanently finalizes pending daily prices without a
+chain replay. After its block spool drains, it polls for available source days,
+re-reads matching active-chain blocks from the local pruned store, recomputes
+all 19 price and denomination fields, and atomically records a distinct
+`price-finalization` ingest success. NULL prices remain a durable retry signal.
+The default `-enterprisepricefinalizationlookback=2016` bounds both PostgreSQL
+work and local block-retention requirements; set it to 0 to disable. Recovery
+outside the retained range requires a node with the relevant blocks and an
+explicitly larger lookback; ordinary reindex coverage skips matching rows that
+already use the current classifier.
+
 ```shell
 PGDB=enterprisebitcoin
 PGUSER=enterprisebitcoin

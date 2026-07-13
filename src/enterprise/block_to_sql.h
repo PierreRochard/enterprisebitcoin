@@ -18,6 +18,12 @@
 
 class CBlockUndo;
 
+enum class PriceFinalizationResult {
+    PRICE_UNAVAILABLE,
+    NOT_PENDING,
+    UPDATED,
+};
+
 struct FeeData {
     unsigned int fee;
     unsigned int size;
@@ -63,5 +69,10 @@ public:
 
 void DeleteBlockFromSql(const uint256& hash);
 void DeleteBlockFromSql(enterprise::PgSession& session, pqxx::work& work, const uint256& hash);
+[[nodiscard]] PriceFinalizationResult FinalizeBlockDenominationPrice(
+    enterprise::PgSession& session,
+    pqxx::work& work,
+    const CBlockIndex& block_index,
+    const CBlock& block);
 
 #endif //BLOCK_TO_SQL_H

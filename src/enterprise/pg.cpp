@@ -952,6 +952,112 @@ std::vector<BlockRowKey> FindCoveredBlockRows(pqxx::work& w, const std::vector<B
     return covered;
 }
 
+std::vector<BlockRowKey> FindPriceFinalizationCandidates(
+    PgSession& session,
+    pqxx::work& work,
+    int min_height,
+    int max_height,
+    std::size_t limit)
+{
+    std::vector<BlockRowKey> candidates;
+    if (min_height > max_height || limit == 0) return candidates;
+
+    session.Prepare("EnterprisePriceFinalizationDayType", R"sql(
+        SELECT atttypid::regtype::text
+        FROM pg_attribute
+        WHERE attrelid = 'public.prices'::regclass
+          AND attname = 'day'
+          AND attnum > 0
+          AND NOT attisdropped
+    )sql");
+    const pqxx::result day_type_result{
+        enterprise::ExecPrepared(work, "EnterprisePriceFinalizationDayType")};
+    if (day_type_result.size() != 1 || day_type_result.front()[0].is_null()) {
+        throw std::runtime_error("public.prices.day metadata is unavailable for price finalization");
+    }
+
+    const std::string day_type{day_type_result.front()[0].as<std::string>()};
+    std::string price_day_expression;
+    if (day_type == "date") {
+        price_day_expression = "prices.day";
+    } else if (day_type == "timestamp with time zone") {
+        price_day_expression = "(prices.day AT TIME ZONE 'UTC')::date";
+    } else if (day_type == "timestamp without time zone") {
+        price_day_expression = "prices.day::date";
+    } else {
+        throw std::runtime_error("public.prices.day has unsupported type " + day_type);
+    }
+
+    std::string sql{R"sql(
+        SELECT blocks.height, blocks.hash
+        FROM blocks
+        WHERE blocks.network = $1
+          AND blocks.height BETWEEN $2 AND $3
+          AND blocks.time IS NOT NULL
+          AND blocks.denomination_classifier_version = $4
+          AND blocks.btc_usd_price IS NULL
+          AND EXISTS (
+              SELECT 1
+              FROM public.prices AS prices
+              WHERE )sql"};
+    sql += price_day_expression;
+    sql += R"sql( = (blocks.time AT TIME ZONE 'UTC')::date
+                AND prices.price IS NOT NULL
+          )
+        ORDER BY blocks.height DESC
+        LIMIT $5
+    )sql";
+    session.Prepare("EnterprisePriceFinalizationCandidates", sql);
+    const pqxx::result result{enterprise::ExecPrepared(
+        work,
+        "EnterprisePriceFinalizationCandidates",
+        Network(),
+        min_height,
+        max_height,
+        DENOMINATION_CLASSIFIER_VERSION,
+        static_cast<int64_t>(limit))};
+    candidates.reserve(result.size());
+    for (const pqxx::row& row : result) {
+        const auto hash{uint256::FromHex(row[1].as<std::string>())};
+        if (!hash) {
+            throw std::runtime_error(strprintf(
+                "public.blocks contains an invalid hash at price-finalization height %d",
+                row[0].as<int>()));
+        }
+        candidates.push_back(BlockRowKey{row[0].as<int>(), *hash});
+    }
+    return candidates;
+}
+
+void MarkPriceFinalizationSucceeded(
+    PgSession& session,
+    pqxx::work& work,
+    int height,
+    const uint256& hash)
+{
+    session.Prepare("EnterpriseMarkPriceFinalizationSucceeded", R"sql(
+        INSERT INTO enterprise_block_ingest
+            (network, hash, height, event_type, status, source, spool_path, attempts, last_error, completed_at)
+        VALUES
+            ($1, $2, $3, 'price-finalization', 'succeeded', 'price-finalization', NULL, 1, NULL, now())
+        ON CONFLICT (network, hash, event_type) DO UPDATE SET
+            height = EXCLUDED.height,
+            status = EXCLUDED.status,
+            source = EXCLUDED.source,
+            spool_path = NULL,
+            attempts = enterprise_block_ingest.attempts + 1,
+            last_error = NULL,
+            updated_at = now(),
+            completed_at = now()
+    )sql");
+    enterprise::ExecPrepared(
+        work,
+        "EnterpriseMarkPriceFinalizationSucceeded",
+        Network(),
+        hash.GetHex(),
+        height);
+}
+
 void MarkGapQueued(int height, const uint256& expected_hash, const std::string& source)
 {
     pqxx::connection c{Connect()};

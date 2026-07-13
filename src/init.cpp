@@ -538,6 +538,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
 #ifdef ENABLE_ENTERPRISE_SQL
     argsman.AddArg("-enterpriseindex", strprintf("Maintain enterprise block spool and async Postgres writer. Supports pruned nodes by durably capturing block+undo deltas before block files are deleted. When enabled without an explicit -prune setting, defaults to -prune=%u MiB (default: %u)", DEFAULT_ENTERPRISE_PRUNE_TARGET_MIB, DEFAULT_ENTERPRISEINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-enterprisebackfillheight=<height>", strprintf("Update only denomination and price fields on matching historical PostgreSQL block rows through <height>. Rows already using the current classifier are skipped. Set to -1 to disable (default: %d)", DEFAULT_ENTERPRISE_BACKFILL_HEIGHT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-enterprisepricefinalizationlookback=<blocks>", strprintf("Scan this many recent active-chain heights for current-classifier rows whose daily BTC/USD close has become available, then atomically recompute their denomination fields. Set to 0 to disable (default: %u)", DEFAULT_ENTERPRISE_PRICE_FINALIZATION_LOOKBACK), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-enterprisemempoolexport", strprintf("Export mempool add/remove events synchronously to PostgreSQL. Disabled by default so a PostgreSQL outage cannot stall mempool mutation paths (default: %u)", DEFAULT_ENTERPRISE_MEMPOOL_EXPORT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-enterprisespoolmax=<MiB>", strprintf("Maximum durable enterprise block spool size before validation waits for the Postgres writer. Set to 0 to disable backpressure (default: %u)", DEFAULT_ENTERPRISE_SPOOL_MAX_MIB), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-enterpriseconfig=<file>", "Read enterprise PostgreSQL connection settings exclusively from this KEY=VALUE file. Relative paths are resolved under the network datadir. When unset, <datadir>/<chain>/enterprise.env overrides .env in the working directory, and PGDB, PGUSER, PGPASSWORD, PGHOST, and PGPORT environment variables override those implicit files.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -1056,6 +1057,18 @@ bool AppInitParameterInteraction(const ArgsManager& args)
     }
     if (enterprise_backfill_height >= 0 && !args.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX)) {
         return InitError(_("-enterprisebackfillheight requires -enterpriseindex=1."));
+    }
+    const int64_t enterprise_price_finalization_lookback{
+        args.GetIntArg("-enterprisepricefinalizationlookback", DEFAULT_ENTERPRISE_PRICE_FINALIZATION_LOOKBACK)};
+    if (enterprise_price_finalization_lookback < 0 ||
+        enterprise_price_finalization_lookback > std::numeric_limits<int>::max()) {
+        return InitError(strprintf(
+            _("-enterprisepricefinalizationlookback must be from 0 through %d."),
+            std::numeric_limits<int>::max()));
+    }
+    if (args.IsArgSet("-enterprisepricefinalizationlookback") &&
+        !args.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX)) {
+        return InitError(_("-enterprisepricefinalizationlookback requires -enterpriseindex=1."));
     }
     if (args.GetBoolArg("-enterprisemempoolexport", DEFAULT_ENTERPRISE_MEMPOOL_EXPORT) &&
         !args.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX)) {

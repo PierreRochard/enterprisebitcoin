@@ -41,12 +41,36 @@ using namespace std::chrono_literals;
 std::unique_ptr<EnterpriseIndex> g_enterprise_index;
 
 static constexpr std::size_t COVERED_CONNECT_BATCH_SIZE{2048};
+static constexpr auto PRICE_FINALIZATION_SCAN_INTERVAL{60s};
+
+namespace {
+class PriceFinalizationPruneLock
+{
+private:
+    node::BlockManager& m_blockman;
+
+public:
+    PriceFinalizationPruneLock(node::BlockManager& blockman, int height)
+        : m_blockman{blockman}
+    {
+        WITH_LOCK(::cs_main, m_blockman.UpdatePruneLock("enterprise-price-finalization", {height}));
+    }
+
+    ~PriceFinalizationPruneLock()
+    {
+        WITH_LOCK(::cs_main, m_blockman.DeletePruneLock("enterprise-price-finalization"));
+    }
+};
+} // namespace
 
 EnterpriseIndex::EnterpriseIndex(std::unique_ptr<interfaces::Chain> chain, size_t n_cache_size, bool f_memory, bool f_wipe)
     : BaseIndex(std::move(chain), "enterpriseindex", "enterpriseidx"),
       m_db{std::make_unique<BaseIndex::DB>(gArgs.GetDataDirNet() / "indexes" / "enterpriseindex" / "db", n_cache_size, f_memory, f_wipe)},
       m_spool{gArgs.GetDataDirNet() / "enterprise" / "block_spool"},
-      m_backfill_height{static_cast<int>(gArgs.GetIntArg("-enterprisebackfillheight", DEFAULT_ENTERPRISE_BACKFILL_HEIGHT))}
+      m_backfill_height{static_cast<int>(gArgs.GetIntArg("-enterprisebackfillheight", DEFAULT_ENTERPRISE_BACKFILL_HEIGHT))},
+      m_price_finalization_lookback{static_cast<int>(gArgs.GetIntArg(
+          "-enterprisepricefinalizationlookback",
+          DEFAULT_ENTERPRISE_PRICE_FINALIZATION_LOOKBACK))}
 {
     if (f_wipe) {
         const std::vector<fs::path> stale_spool{m_spool.Pending()};
@@ -235,13 +259,13 @@ bool EnterpriseIndex::ApplySpoolBackpressure()
     while (m_spool.UsageBytes() > m_spool_max_bytes) {
         if (shutdown_interrupted()) {
             LogInfo("enterprise: shutdown interrupt bypassing block spool backpressure at %d MiB",
-                m_spool.UsageBytes() / (1024 * 1024));
+                    m_spool.UsageBytes() / (1024 * 1024));
             return true;
         }
         if (!logged) {
             LogInfo("enterprise: block spool is %d MiB, waiting for postgres writer to drain below %d MiB",
-                m_spool.UsageBytes() / (1024 * 1024),
-                m_spool_max_bytes / (1024 * 1024));
+                    m_spool.UsageBytes() / (1024 * 1024),
+                    m_spool_max_bytes / (1024 * 1024));
             logged = true;
         }
 
@@ -304,6 +328,9 @@ bool EnterpriseIndex::DrainOnce(enterprise::PgSession& session)
         all_drained = false;
     }
     if (all_drained && ReconcileGaps()) {
+        return true;
+    }
+    if (all_drained && FinalizeAvailablePrices(session)) {
         return true;
     }
     return all_drained;
@@ -490,14 +517,14 @@ bool EnterpriseIndex::ReconcileGaps()
                 const enterprise::BlockTableCoverage coverage{enterprise::GetBlockTableCoverage(chain_tip_height)};
                 if (coverage.Complete()) {
                     LogInfo("enterprise: blocks table coverage complete: %d/%d heights populated",
-                        coverage.populated_heights, coverage.expected_blocks);
+                            coverage.populated_heights, coverage.expected_blocks);
                 } else {
                     LogInfo("enterprise: blocks table coverage incomplete: populated=%d expected=%d missing=%d duplicate_rows=%d unavailable=%d",
-                        coverage.populated_heights,
-                        coverage.expected_blocks,
-                        coverage.missing_heights,
-                        coverage.duplicate_rows,
-                        coverage.unavailable_heights);
+                            coverage.populated_heights,
+                            coverage.expected_blocks,
+                            coverage.missing_heights,
+                            coverage.duplicate_rows,
+                            coverage.unavailable_heights);
                 }
             } catch (const std::exception& e) {
                 LogDebug(BCLog::ALL, "enterprise: block coverage scan skipped: %s\n", e.what());
@@ -532,6 +559,151 @@ bool EnterpriseIndex::ReconcileGaps()
         m_next_gap_scan = now + 60s;
     }
     return queued;
+}
+
+bool EnterpriseIndex::FinalizeAvailablePrices(enterprise::PgSession& session)
+{
+    const auto now{NodeClock::now()};
+    if (now < m_next_price_finalization_scan) return false;
+    m_next_price_finalization_scan = now + PRICE_FINALIZATION_SCAN_INTERVAL;
+    if (m_price_finalization_lookback == 0) return false;
+
+    const int chain_tip_height{WITH_LOCK(::cs_main, return m_chainstate->m_chain.Height())};
+    if (chain_tip_height < 0) return false;
+    const int min_height{static_cast<int>(std::max<int64_t>(
+        0,
+        static_cast<int64_t>(chain_tip_height) - m_price_finalization_lookback))};
+
+    uint64_t finalization_generation;
+    {
+        std::lock_guard<std::mutex> lock{m_writer_mutex};
+        if (m_writer_stop) return false;
+        finalization_generation = m_writer_wakeup_generation;
+    }
+    // A spool event may have arrived after DrainOnce() took its pending-file
+    // snapshot. Always give chain updates priority over maintenance work.
+    if (!m_spool.Pending().empty()) return false;
+
+    for (auto it = m_price_finalization_deferred.begin(); it != m_price_finalization_deferred.end();) {
+        if (it->first < min_height || it->first > chain_tip_height) {
+            it = m_price_finalization_deferred.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    std::vector<enterprise::BlockRowKey> candidates;
+    {
+        pqxx::work work{session.Connection()};
+        candidates = enterprise::FindPriceFinalizationCandidates(
+            session,
+            work,
+            min_height,
+            chain_tip_height,
+            static_cast<std::size_t>(chain_tip_height - min_height) + 1);
+        work.commit();
+    }
+    if (candidates.empty()) return false;
+
+    const auto lowest_candidate{std::min_element(
+        candidates.begin(),
+        candidates.end(),
+        [](const auto& left, const auto& right) { return left.height < right.height; })};
+    PriceFinalizationPruneLock prune_lock{
+        m_chainstate->m_blockman,
+        lowest_candidate->height};
+
+    std::size_t finalized{0};
+    for (const enterprise::BlockRowKey& candidate : candidates) {
+        {
+            std::lock_guard<std::mutex> lock{m_writer_mutex};
+            if (m_writer_stop || m_writer_wakeup_generation != finalization_generation) {
+                return finalized > 0;
+            }
+        }
+
+        const auto deferred_key{std::make_pair(candidate.height, candidate.hash.GetHex())};
+        const CBlockIndex* pindex{
+            WITH_LOCK(::cs_main, return m_chainstate->m_chain[candidate.height])};
+        if (!pindex || pindex->GetBlockHash() != candidate.hash) {
+            LogDebug(BCLog::ALL,
+                     "enterprise: price finalization skipped inactive block row at height %d (%s)",
+                     candidate.height,
+                     candidate.hash.ToString());
+            continue;
+        }
+
+        CBlock block;
+        if (!m_chainstate->m_blockman.ReadBlock(block, *pindex)) {
+            if (m_price_finalization_deferred.insert(deferred_key).second) {
+                LogWarning(
+                    "enterprise: price finalization cannot read retained block at height %d (%s); NULL price retained",
+                    candidate.height,
+                    candidate.hash.ToString());
+            } else {
+                LogDebug(BCLog::ALL,
+                         "enterprise: price finalization still cannot read retained block at height %d (%s)\n",
+                         candidate.height,
+                         candidate.hash.ToString());
+            }
+            continue;
+        }
+
+        try {
+            pqxx::work work{session.Connection()};
+            const PriceFinalizationResult result{
+                FinalizeBlockDenominationPrice(session, work, *pindex, block)};
+            if (result == PriceFinalizationResult::UPDATED) {
+                enterprise::MarkPriceFinalizationSucceeded(
+                    session,
+                    work,
+                    candidate.height,
+                    candidate.hash);
+            } else if (result == PriceFinalizationResult::PRICE_UNAVAILABLE &&
+                       m_price_finalization_deferred.insert(deferred_key).second) {
+                LogWarning(
+                    "enterprise: available price row is not a usable denomination window at height %d (%s); NULL price retained",
+                    candidate.height,
+                    candidate.hash.ToString());
+            }
+            work.commit();
+            if (result == PriceFinalizationResult::UPDATED) {
+                ++finalized;
+                m_price_finalization_deferred.erase(deferred_key);
+                LogInfo(
+                    "enterprise: finalized BTC/USD denomination price at height %d (%s)",
+                    candidate.height,
+                    candidate.hash.ToString());
+            } else if (result == PriceFinalizationResult::NOT_PENDING) {
+                m_price_finalization_deferred.erase(deferred_key);
+            }
+            if (finalized >= DEFAULT_ENTERPRISE_PRICE_FINALIZATION_BATCH_SIZE) break;
+        } catch (const pqxx::in_doubt_error& e) {
+            session.Reset();
+            LogError(
+                "enterprise: PostgreSQL price-finalization commit outcome is unknown at height %d; NULL state will drive safe reconciliation: %s",
+                candidate.height,
+                e.what());
+            break;
+        } catch (const std::exception& e) {
+            session.Reset();
+            LogError(
+                "enterprise: price finalization failed at height %d; NULL price retained for retry: %s",
+                candidate.height,
+                e.what());
+            break;
+        }
+    }
+
+    if (finalized == DEFAULT_ENTERPRISE_PRICE_FINALIZATION_BATCH_SIZE) {
+        m_next_price_finalization_scan = NodeClock::now();
+    }
+    if (finalized > 0) {
+        LogInfo(
+            "enterprise: finalized %u block prices from available daily closes",
+            finalized);
+    }
+    return finalized > 0;
 }
 
 bool EnterpriseIndex::QueueLocalBackfill(const CBlockIndex& block_index)
