@@ -544,6 +544,10 @@ bool EnterpriseIndex::ReconcileGaps()
 {
     const auto now{NodeClock::now()};
     if (now < m_next_gap_scan) return false;
+    // During initial index sync, heights ahead of the index are expected to be
+    // absent from PostgreSQL and CustomAppend will spool them in order. Gap
+    // repair at this point would queue the same block deltas a second time.
+    if (!GetSummary().synced) return false;
 
     const int chain_tip_height{WITH_LOCK(::cs_main, return m_chainstate->m_chain.Height())};
     std::vector<int> gaps;
