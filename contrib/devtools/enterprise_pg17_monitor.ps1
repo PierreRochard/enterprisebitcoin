@@ -133,11 +133,12 @@ function Get-NodeMetrics {
     $cli = (Resolve-Path -LiteralPath $BitcoinCliPath -ErrorAction Stop).Path
     $chainRaw = & $cli "-datadir=$nodeDatadir" getblockchaininfo 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'bitcoin-cli could not query getblockchaininfo.' }
-    $indexRaw = & $cli "-datadir=$nodeDatadir" getindexinfo enterpriseindex 2>$null
-    if ($LASTEXITCODE -ne 0) { throw 'bitcoin-cli could not query enterpriseindex.' }
+    $indexRaw = & $cli "-datadir=$nodeDatadir" getindexinfo 2>$null
+    if ($LASTEXITCODE -ne 0) { throw 'bitcoin-cli could not query node indexes.' }
     $chain = ($chainRaw -join [Environment]::NewLine) | ConvertFrom-Json
     $indexes = ($indexRaw -join [Environment]::NewLine) | ConvertFrom-Json
     $enterpriseIndex = $indexes.enterpriseindex
+    $coinStatsIndex = $indexes.coinstatsindex
     return [ordered]@{
         headers = [int64] $chain.headers
         blocks = [int64] $chain.blocks
@@ -145,6 +146,8 @@ function Get-NodeMetrics {
         verification_progress = [double] $chain.verificationprogress
         enterprise_height = if ($enterpriseIndex) { [int64] $enterpriseIndex.best_block_height } else { $null }
         enterprise_synced = if ($enterpriseIndex) { [bool] $enterpriseIndex.synced } else { $false }
+        coinstats_height = if ($coinStatsIndex) { [int64] $coinStatsIndex.best_block_height } else { $null }
+        coinstats_synced = if ($coinStatsIndex) { [bool] $coinStatsIndex.synced } else { $false }
     }
 }
 
@@ -206,7 +209,7 @@ try {
             }
         } elseif ($sample.sql_error) { Write-Warning $sample.sql_error }
         if ($sample.node) {
-            Write-Output "Node blocks=$($sample.node.blocks) headers=$($sample.node.headers) enterprise=$($sample.node.enterprise_height) synced=$($sample.node.enterprise_synced)"
+            Write-Output "Node blocks=$($sample.node.blocks) headers=$($sample.node.headers) enterprise=$($sample.node.enterprise_height) enterprise_synced=$($sample.node.enterprise_synced) coinstats=$($sample.node.coinstats_height) coinstats_synced=$($sample.node.coinstats_synced)"
         } elseif ($sample.node_error) { Write-Warning $sample.node_error }
 
         if ($resolvedLogPath) {

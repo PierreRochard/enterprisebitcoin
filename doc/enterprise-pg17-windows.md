@@ -31,10 +31,12 @@ Initialization creates `.runtime/mainnet/{node,blocks-root}`, copies `.env` to
 `.runtime/mainnet/enterprise.env`, and limits both secret files to the current
 Windows identity and SYSTEM. It refuses to initialize if chain data is already
 present. The generated configuration uses a fresh mainnet datadir, outbound-only
-networking, no wallet, no optional Bitcoin indexes, 20 GiB pruning, a 4 GiB
-database cache, the enterprise index, a 1 GiB spool ceiling, and denomination
-backfill through height 933996. Enterprise mempool export remains explicitly
-disabled for this production rollout. Do not load an assumeutxo snapshot.
+networking, no wallet, 20 GiB pruning, a 4 GiB database cache, both the
+enterprise and CoinStats indexes, and a 1 GiB enterprise spool ceiling.
+Enterprise mempool export remains explicitly disabled. The current default
+does not replay the completed denomination backfill; pass an explicit
+`-BackfillHeight` only for a reviewed historical recovery. Do not load an
+assumeutxo snapshot.
 
 `.runtime/` is ignored by Git but is still removable by `git clean -fdx`. Treat
 the directory as operational state, not as source-controlled recovery media.
@@ -111,6 +113,13 @@ scripts contain no production cleanup path.
 
 ## 4. Launch and monitor
 
+Windows production uses this as one combined node. The database repository owns
+hidden Task Scheduler supervision, readiness gating, and bounded CoinStats
+imports through `ops/combined-node/manage.ps1`. A primary datadir previously
+pruned with `coinstatsindex=0` requires one full `-reindex`; this redownloads
+the blockchain and builds both indexes from genesis. Already-covered enterprise
+rows are reconciled idempotently.
+
 After committed binaries have a clean version string and verified SHA-256
 manifest, ask the runtime tool for the manual command. It prints but does not
 run it:
@@ -159,8 +168,9 @@ pwsh -NoProfile -File contrib/devtools/enterprise_pg17_monitor.ps1 -Action Once 
 pwsh -NoProfile -File contrib/devtools/enterprise_pg17_monitor.ps1 -Action Watch -BitcoinCliPath <artifact-bitcoin-cli.exe> -EnableStop -ConfirmDatadir <absolute-repo-path>\.runtime\mainnet\node
 ```
 
-After backfill succeeds through 933996, stop the node, regenerate the config,
-verify it with the same option, and restart manually:
+For a legacy rollout that explicitly used denomination backfill through 933996,
+stop the node after it succeeds, regenerate the config with backfill disabled,
+verify it with the same option, and restart:
 
 ```powershell
 pwsh -NoProfile -File contrib/devtools/enterprise_pg17_runtime.ps1 -Action Configure -BackfillHeight -1 -ConfirmConfigUpdate -ForceConfig

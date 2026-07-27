@@ -4,7 +4,7 @@ param(
     [string] $Action = 'Preflight',
     [string] $EnvFile = '.env',
     [string] $ExpectedDatabase = 'bitcoin_enterprise',
-    [int] $BackfillHeight = 933996,
+    [int] $BackfillHeight = -1,
     [string] $BitcoindPath,
     [switch] $ConfirmInitialize,
     [switch] $ConfirmConfigUpdate,
@@ -38,7 +38,9 @@ function Get-ExpectedConfig {
     $config = [ordered]@{
         'chain' = 'main'
         'server' = '1'
+        'nosettings' = '1'
         'rpcbind' = '127.0.0.1'
+        'rpcallowip' = '127.0.0.1'
         'listen' = '0'
         'listenonion' = '0'
         'discover' = '0'
@@ -47,7 +49,7 @@ function Get-ExpectedConfig {
         'prune' = '20000'
         'dbcache' = '4096'
         'txindex' = '0'
-        'coinstatsindex' = '0'
+        'coinstatsindex' = '1'
         'blockfilterindex' = '0'
         'peerblockfilters' = '0'
         'enterpriseindex' = '1'
@@ -74,6 +76,19 @@ function Write-RuntimeConfig {
     $temporary = "$configPath.tmp-$PID"
     $lines | Set-Content -LiteralPath $temporary -Encoding utf8
     Move-Item -LiteralPath $temporary -Destination $configPath -Force
+}
+
+function Backup-RuntimeConfig {
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        return $null
+    }
+    $backupDirectory = Join-Path $mainnetRoot 'config-backups'
+    [void] (New-Item -ItemType Directory -Path $backupDirectory -Force)
+    $backupPath = Join-Path $backupDirectory (
+        'bitcoin-{0}.conf' -f [DateTimeOffset]::UtcNow.ToString('yyyyMMddTHHmmssZ')
+    )
+    Copy-Item -LiteralPath $configPath -Destination $backupPath
+    return $backupPath
 }
 
 function Read-RuntimeConfig {
@@ -162,8 +177,12 @@ switch ($Action) {
             throw 'bitcoin.conf exists; use -ForceConfig with the explicit config-update confirmation.'
         }
         Assert-EnterpriseSecretAcl -Path $runtimeEnv
+        $backupPath = Backup-RuntimeConfig
         Write-RuntimeConfig
         Test-RuntimeLayout
+        if ($backupPath) {
+            Write-Output "Previous runtime configuration retained at: $backupPath"
+        }
         Write-Output 'Runtime configuration updated. No node process was started.'
     }
     'LaunchCommand' {
