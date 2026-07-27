@@ -43,6 +43,7 @@ private:
     uint64_t m_spool_max_bytes{0};
     int m_backfill_height{static_cast<int>(DEFAULT_ENTERPRISE_BACKFILL_HEIGHT)};
     int m_price_finalization_lookback{DEFAULT_ENTERPRISE_PRICE_FINALIZATION_LOOKBACK};
+    bool m_bootstrap_from_postgres{false};
     bool m_reindex_with_pending_spool{false};
     std::set<std::pair<int, std::string>> m_price_finalization_deferred;
 
@@ -67,6 +68,7 @@ private:
 
 protected:
     void BlockDisconnected(const std::shared_ptr<const CBlock>& block, const CBlockIndex* pindex) override;
+    bool CustomInitBestBlock(std::optional<interfaces::BlockRef>& block) override;
     bool CustomInit(const std::optional<interfaces::BlockRef>& block) override;
     bool CustomAppend(const interfaces::BlockInfo& block) override;
     bool CustomRemove(const interfaces::BlockInfo& block) override;

@@ -70,7 +70,12 @@ EnterpriseIndex::EnterpriseIndex(std::unique_ptr<interfaces::Chain> chain, size_
       m_backfill_height{static_cast<int>(gArgs.GetIntArg("-enterprisebackfillheight", DEFAULT_ENTERPRISE_BACKFILL_HEIGHT))},
       m_price_finalization_lookback{static_cast<int>(gArgs.GetIntArg(
           "-enterprisepricefinalizationlookback",
-          DEFAULT_ENTERPRISE_PRICE_FINALIZATION_LOOKBACK))}
+          DEFAULT_ENTERPRISE_PRICE_FINALIZATION_LOOKBACK))},
+      m_bootstrap_from_postgres{
+          !f_wipe &&
+          gArgs.GetBoolArg(
+              "-enterprisebootstrapfrompostgres",
+              DEFAULT_ENTERPRISE_BOOTSTRAP_FROM_POSTGRES)}
 {
     if (f_wipe) {
         const std::vector<fs::path> stale_spool{m_spool.Pending()};
@@ -121,6 +126,45 @@ void EnterpriseIndex::BlockDisconnected(const std::shared_ptr<const CBlock>& blo
             m_chain->context()->exit_status,
             Untranslated(message),
             m_chain->context()->warnings.get());
+    }
+}
+
+bool EnterpriseIndex::CustomInitBestBlock(std::optional<interfaces::BlockRef>& block)
+{
+    block.reset();
+    if (!m_bootstrap_from_postgres) return true;
+    if (m_backfill_height >= 0) {
+        LogError("enterprise: PostgreSQL bootstrap requires -enterprisebackfillheight=-1");
+        return false;
+    }
+
+    try {
+        enterprise::ValidateEnterpriseSchema();
+        const int chain_tip_height{WITH_LOCK(::cs_main, return m_chainstate->m_chain.Height())};
+        const std::vector<enterprise::BlockRowKey> rows{
+            enterprise::LoadBlockRowsThroughHeight(chain_tip_height)};
+
+        enterprise::BlockRowKey verified_tip;
+        {
+            LOCK(::cs_main);
+            const CChain& active_chain{m_chainstate->m_chain};
+            verified_tip = enterprise::VerifyContiguousBlockRows(
+                rows,
+                active_chain.Height(),
+                [&active_chain](int height) {
+                    return Assert(active_chain[height])->GetBlockHash();
+                });
+        }
+
+        block = interfaces::BlockRef{verified_tip.hash, verified_tip.height};
+        LogInfo(
+            "enterprise: verified contiguous PostgreSQL coverage against the active chain through height %d (%u rows)",
+            verified_tip.height,
+            rows.size());
+        return true;
+    } catch (const std::exception& e) {
+        LogError("enterprise: PostgreSQL bootstrap verification failed: %s", e.what());
+        return false;
     }
 }
 

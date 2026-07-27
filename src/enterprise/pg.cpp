@@ -875,6 +875,78 @@ BlockTableCoverage GetBlockTableCoverage(int chain_tip_height)
     return coverage;
 }
 
+std::vector<BlockRowKey> LoadBlockRowsThroughHeight(int chain_tip_height)
+{
+    if (chain_tip_height < 0) return {};
+
+    PgSession session;
+    pqxx::work work{session.Connection()};
+    session.Prepare("EnterpriseBlockRowsThroughHeight", R"sql(
+        SELECT height, hash
+        FROM blocks
+        WHERE network = $1
+          AND height BETWEEN 0 AND $2::bigint
+        ORDER BY height, hash
+    )sql");
+
+    std::vector<BlockRowKey> rows;
+    for (const auto& row : enterprise::ExecPrepared(
+             work,
+             "EnterpriseBlockRowsThroughHeight",
+             Network(),
+             chain_tip_height)) {
+        const int height{row[0].as<int>()};
+        const auto hash{uint256::FromHex(row[1].as<std::string>())};
+        if (!hash) {
+            throw std::runtime_error(strprintf(
+                "invalid PostgreSQL block hash at height %d",
+                height));
+        }
+        rows.push_back(BlockRowKey{height, *hash});
+    }
+    work.commit();
+    return rows;
+}
+
+BlockRowKey VerifyContiguousBlockRows(
+    const std::vector<BlockRowKey>& rows,
+    int chain_tip_height,
+    const std::function<uint256(int)>& active_chain_hash)
+{
+    if (rows.empty()) {
+        throw std::runtime_error("PostgreSQL block coverage is empty");
+    }
+    if (chain_tip_height < 0) {
+        throw std::runtime_error("active chain is empty");
+    }
+
+    int expected_height{0};
+    for (const BlockRowKey& row : rows) {
+        if (row.height != expected_height) {
+            throw std::runtime_error(strprintf(
+                "PostgreSQL block coverage is not contiguous: expected height %d, found %d",
+                expected_height,
+                row.height));
+        }
+        if (row.height > chain_tip_height) {
+            throw std::runtime_error(strprintf(
+                "PostgreSQL block height %d exceeds active chain tip %d",
+                row.height,
+                chain_tip_height));
+        }
+        const uint256 expected_hash{active_chain_hash(row.height)};
+        if (row.hash != expected_hash) {
+            throw std::runtime_error(strprintf(
+                "PostgreSQL block hash mismatch at height %d: database=%s active_chain=%s",
+                row.height,
+                row.hash.ToString(),
+                expected_hash.ToString()));
+        }
+        ++expected_height;
+    }
+    return rows.back();
+}
+
 bool BlockRowCovered(int height, const uint256& expected_hash, int backfill_height)
 {
     pqxx::connection c{Connect()};

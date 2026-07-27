@@ -71,6 +71,11 @@ void ReconcileCoveredIngest(PgSession& session, pqxx::work& work, const Enterpri
 
 [[nodiscard]] std::vector<int> FindBlockTableGaps(int chain_tip_height, std::size_t limit);
 [[nodiscard]] BlockTableCoverage GetBlockTableCoverage(int chain_tip_height);
+[[nodiscard]] std::vector<BlockRowKey> LoadBlockRowsThroughHeight(int chain_tip_height);
+[[nodiscard]] BlockRowKey VerifyContiguousBlockRows(
+    const std::vector<BlockRowKey>& rows,
+    int chain_tip_height,
+    const std::function<uint256(int)>& active_chain_hash);
 [[nodiscard]] bool BlockRowCovered(int height, const uint256& expected_hash, int backfill_height);
 [[nodiscard]] std::vector<BlockRowKey> FindCoveredBlockRows(const std::vector<BlockRowKey>& rows, int backfill_height);
 [[nodiscard]] std::vector<BlockRowKey> FindCoveredBlockRows(pqxx::work& work, const std::vector<BlockRowKey>& rows, int backfill_height);
