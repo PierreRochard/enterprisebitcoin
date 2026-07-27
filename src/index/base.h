@@ -8,6 +8,7 @@
 #include <attributes.h>
 #include <dbwrapper.h>
 #include <interfaces/chain.h>
+#include <interfaces/types.h>
 #include <kernel/cs_main.h>
 #include <sync.h>
 #include <uint256.h>
@@ -33,9 +34,6 @@ struct IndexSummary {
     int best_block_height{0};
     uint256 best_block_hash;
 };
-namespace interfaces {
-struct BlockRef;
-}
 namespace util {
 template <unsigned int num_params>
 struct ConstevalFormatString;
@@ -125,6 +123,18 @@ protected:
 
     /// Initialize internal state from the database and block index.
     [[nodiscard]] virtual bool CustomInit(const std::optional<interfaces::BlockRef>& block) { return true; }
+
+    /**
+     * Optionally seed an empty index database from an independently verified
+     * block. Implementations must return false on any verification failure.
+     * The base class validates that the returned height and hash are on the
+     * active chain before it persists the locator.
+     */
+    [[nodiscard]] virtual bool CustomInitBestBlock(std::optional<interfaces::BlockRef>& block)
+    {
+        block.reset();
+        return true;
+    }
 
     /// Write update index entries for a newly connected block.
     [[nodiscard]] virtual bool CustomAppend(const interfaces::BlockInfo& block) { return true; }

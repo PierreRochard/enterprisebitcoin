@@ -537,6 +537,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-coinstatsindex", strprintf("Maintain coinstats index used by the gettxoutsetinfo RPC (default: %u)", DEFAULT_COINSTATSINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #ifdef ENABLE_ENTERPRISE_SQL
     argsman.AddArg("-enterpriseindex", strprintf("Maintain enterprise block spool and async Postgres writer. Supports pruned nodes by durably capturing block+undo deltas before block files are deleted. When enabled without an explicit -prune setting, defaults to -prune=%u MiB (default: %u)", DEFAULT_ENTERPRISE_PRUNE_TARGET_MIB, DEFAULT_ENTERPRISEINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-enterprisebootstrapfrompostgres", strprintf("When the enterprise index database is empty, verify every contiguous PostgreSQL block row against the active header chain and initialize the index at the last verified height. Remaining block and undo data must still be available locally. Ignored during -reindex (default: %u)", DEFAULT_ENTERPRISE_BOOTSTRAP_FROM_POSTGRES), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-enterprisebackfillheight=<height>", strprintf("Update only denomination and price fields on matching historical PostgreSQL block rows through <height>. Rows already using the current classifier are skipped. Set to -1 to disable (default: %d)", DEFAULT_ENTERPRISE_BACKFILL_HEIGHT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-enterprisepricefinalizationlookback=<blocks>", strprintf("Scan this many recent active-chain heights for current-classifier rows whose daily BTC/USD close has become available, then atomically recompute their denomination fields. Set to 0 to disable (default: %u)", DEFAULT_ENTERPRISE_PRICE_FINALIZATION_LOOKBACK), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-enterprisemempoolexport", strprintf("Export mempool add/remove events synchronously to PostgreSQL. Disabled by default so a PostgreSQL outage cannot stall mempool mutation paths (default: %u)", DEFAULT_ENTERPRISE_MEMPOOL_EXPORT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -1057,6 +1058,17 @@ bool AppInitParameterInteraction(const ArgsManager& args)
     }
     if (enterprise_backfill_height >= 0 && !args.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX)) {
         return InitError(_("-enterprisebackfillheight requires -enterpriseindex=1."));
+    }
+    const bool enterprise_bootstrap_from_postgres{
+        args.GetBoolArg(
+            "-enterprisebootstrapfrompostgres",
+            DEFAULT_ENTERPRISE_BOOTSTRAP_FROM_POSTGRES)};
+    if (enterprise_bootstrap_from_postgres &&
+        !args.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX)) {
+        return InitError(_("-enterprisebootstrapfrompostgres requires -enterpriseindex=1."));
+    }
+    if (enterprise_bootstrap_from_postgres && enterprise_backfill_height >= 0) {
+        return InitError(_("-enterprisebootstrapfrompostgres requires -enterprisebackfillheight=-1."));
     }
     const int64_t enterprise_price_finalization_lookback{
         args.GetIntArg("-enterprisepricefinalizationlookback", DEFAULT_ENTERPRISE_PRICE_FINALIZATION_LOOKBACK)};

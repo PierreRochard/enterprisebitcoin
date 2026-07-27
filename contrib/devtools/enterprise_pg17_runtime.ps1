@@ -53,12 +53,14 @@ function Get-ExpectedConfig {
         'blockfilterindex' = '0'
         'peerblockfilters' = '0'
         'enterpriseindex' = '1'
+        'enterprisebootstrapfrompostgres' = '1'
         'enterprisespoolmax' = '1024'
         'enterprisemempoolexport' = '0'
         'enterpriseconfig' = Convert-ToBitcoinConfigPath $runtimeEnv
         'blocksdir' = Convert-ToBitcoinConfigPath $blocksRoot
     }
     if ($BackfillHeight -ge 0) {
+        [void] $config.Remove('enterprisebootstrapfrompostgres')
         $config['enterprisebackfillheight'] = [string] $BackfillHeight
     }
     return $config

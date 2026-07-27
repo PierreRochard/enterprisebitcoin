@@ -32,7 +32,8 @@ Initialization creates `.runtime/mainnet/{node,blocks-root}`, copies `.env` to
 Windows identity and SYSTEM. It refuses to initialize if chain data is already
 present. The generated configuration uses a fresh mainnet datadir, outbound-only
 networking, no wallet, 20 GiB pruning, a 4 GiB database cache, both the
-enterprise and CoinStats indexes, and a 1 GiB enterprise spool ceiling.
+enterprise and CoinStats indexes, verified PostgreSQL bootstrap for an empty
+enterprise index, and a 1 GiB enterprise spool ceiling.
 Enterprise mempool export remains explicitly disabled. The current default
 does not replay the completed denomination backfill; pass an explicit
 `-BackfillHeight` only for a reviewed historical recovery. Do not load an
@@ -115,10 +116,17 @@ scripts contain no production cleanup path.
 
 Windows production uses this as one combined node. The database repository owns
 hidden Task Scheduler supervision, readiness gating, and bounded CoinStats
-imports through `ops/combined-node/manage.ps1`. A primary datadir previously
-pruned with `coinstatsindex=0` requires one full `-reindex`; this redownloads
-the blockchain and builds both indexes from genesis. Already-covered enterprise
-rows are reconciled idempotently.
+imports through `ops/combined-node/manage.ps1`.
+
+When a retained pruned datadir already has a current CoinStats index, an empty
+enterprise index may initialize from PostgreSQL only after
+`enterprisebootstrapfrompostgres=1` verifies every contiguous database
+height/hash against the active header chain. Bitcoin Core then performs its
+normal block-and-undo availability check from the verified database tip through
+the node tip before the index starts. A missing height, duplicate height, hash
+mismatch, unavailable retained block, schema failure, or explicit historical
+backfill fails closed. `-reindex` deliberately ignores this bootstrap and still
+rebuilds both indexes from genesis.
 
 After committed binaries have a clean version string and verified SHA-256
 manifest, ask the runtime tool for the manual command. It prints but does not

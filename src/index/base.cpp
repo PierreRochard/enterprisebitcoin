@@ -116,7 +116,34 @@ bool BaseIndex::Init()
     // callbacks are not missed once m_synced is true.
     m_chain->context()->validation_signals->RegisterValidationInterface(this);
 
-    const auto locator{GetDB().ReadBestBlock()};
+    CBlockLocator locator{GetDB().ReadBestBlock()};
+    if (locator.IsNull()) {
+        std::optional<interfaces::BlockRef> bootstrap_block;
+        if (!CustomInitBestBlock(bootstrap_block)) {
+            return false;
+        }
+        if (bootstrap_block) {
+            const auto chain_height{m_chain->getHeight()};
+            if (bootstrap_block->height < 0 ||
+                !chain_height ||
+                bootstrap_block->height > *chain_height ||
+                m_chain->getBlockHash(bootstrap_block->height) != bootstrap_block->hash) {
+                return InitError(Untranslated(strprintf(
+                    "verified bootstrap block for %s is not on the active chain",
+                    GetName())));
+            }
+
+            locator = GetLocator(*m_chain, bootstrap_block->hash);
+            CDBBatch batch{GetDB()};
+            GetDB().WriteBestBlock(batch, locator);
+            GetDB().WriteBatch(batch);
+            LogInfo(
+                "%s: initialized empty index database from verified block %s at height %d",
+                GetName(),
+                bootstrap_block->hash.ToString(),
+                bootstrap_block->height);
+        }
+    }
 
     LOCK(cs_main);
     CChain& index_chain = m_chainstate->m_chain;
