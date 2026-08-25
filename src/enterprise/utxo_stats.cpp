@@ -111,6 +111,24 @@ void UtxoStatsExporter::RequestCatchUp()
     RequestExport();
 }
 
+void UtxoStatsExporter::MaybeExportOnConnect(const CBlockIndex& tip)
+{
+    if (tip.nHeight <= 0 || tip.nHeight % UTXO_EXPORT_INTERVAL != 0) return;
+    if (!m_node.chainman || !m_node.chainman->IsInitialBlockDownload()) return;
+
+    try {
+        const UtxoSetExportStats stats{ExportCurrentUtxoSet(m_node, /*force=*/false, /*include_optional_tables=*/false)};
+        if (stats.skipped) {
+            LogInfo("utxostats: skipped height %d during IBD (%s)", stats.height, stats.skip_reason);
+        } else {
+            LogInfo("utxostats: exported height %d during IBD with %u coins in %u age buckets",
+                stats.height, stats.utxo_count, stats.age_buckets);
+        }
+    } catch (const std::exception& e) {
+        LogError("utxostats: IBD export failed at height %d: %s", tip.nHeight, e.what());
+    }
+}
+
 void UtxoStatsExporter::BlockConnected(const kernel::ChainstateRole& role, const std::shared_ptr<const CBlock>&, const CBlockIndex* pindex)
 {
     if (role.historical || !pindex) return;

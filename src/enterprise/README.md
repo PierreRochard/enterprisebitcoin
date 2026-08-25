@@ -25,8 +25,12 @@ tables rather than failing the snapshot. Percentile tables are not written
 (they required holding every UTXO value in RAM).
 
 `exportutxostats` force-exports the current tip on demand. Historical heights
-cannot be reconstructed from a pruned node. Filling the 2015–present gap
-requires a genesis pruned IBD with `-utxostats=1`.
+cannot be reconstructed from a pruned node.
+
+To fill missing 4032-block snapshots, run a throwaway pruned IBD with
+`-utxostats=1 -enterpriseindex=0`. During IBD the node snapshots the live
+chainstate at each aligned height before connecting the next block, and skips
+heights already in `utxo_age`. Tear the datadir down when the gap is closed.
 
 When `-enterpriseindex=1` is enabled and `-prune` is not set explicitly, the
 node defaults to `-prune=20000`, keeping block and undo files to a 20 GB target.

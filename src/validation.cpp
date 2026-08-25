@@ -64,6 +64,9 @@
 #include <util/trace.h>
 #include <util/translation.h>
 #include <validationinterface.h>
+#ifdef ENABLE_ENTERPRISE_SQL
+#include <enterprise/utxo_stats.h>
+#endif
 
 #include <algorithm>
 #include <cassert>
@@ -3092,6 +3095,11 @@ bool Chainstate::ConnectTip(
     m_chain.SetTip(*pindexNew);
     m_chainman.UpdateIBDStatus();
     UpdateTip(pindexNew);
+#ifdef ENABLE_ENTERPRISE_SQL
+    if (enterprise::g_utxo_stats) {
+        enterprise::g_utxo_stats->MaybeExportOnConnect(*pindexNew);
+    }
+#endif
 
     const auto time_6{SteadyClock::now()};
     m_chainman.time_post_connect += time_6 - time_5;

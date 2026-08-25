@@ -26,6 +26,9 @@ public:
     void Start();
     void Stop();
     void RequestCatchUp();
+    //! During IBD, snapshot the live chainstate while this block is still tip.
+    //! Called from ConnectTip with cs_main held. No-op when not in IBD.
+    void MaybeExportOnConnect(const CBlockIndex& tip);
 
 protected:
     void BlockConnected(const kernel::ChainstateRole& role, const std::shared_ptr<const CBlock>& block, const CBlockIndex* pindex) override;

@@ -48,14 +48,19 @@ BOOST_AUTO_TEST_CASE(percent_rounded_to_hundredths)
 BOOST_AUTO_TEST_CASE(should_export_uses_4032_block_intervals)
 {
     BOOST_CHECK(!enterprise::ShouldExportUtxoSet(-1, -1, false, false));
+    BOOST_CHECK(!enterprise::ShouldExportUtxoSet(0, -1, false, false));
     BOOST_CHECK(enterprise::ShouldExportUtxoSet(964012, -1, false, false));
     BOOST_CHECK(enterprise::ShouldExportUtxoSet(964012, 354816, false, false));
     BOOST_CHECK(!enterprise::ShouldExportUtxoSet(964012, 963648, false, false));
+    BOOST_CHECK_EQUAL(358848 % UTXO_EXPORT_INTERVAL, 0);
     BOOST_CHECK(enterprise::ShouldExportUtxoSet(967680, 964012, false, false));
     BOOST_CHECK(enterprise::ShouldExportUtxoSet(967681, 964012, false, false));
     BOOST_CHECK(!enterprise::ShouldExportUtxoSet(967679, 964012, false, false));
     BOOST_CHECK(!enterprise::ShouldExportUtxoSet(964012, 354816, true, false));
     BOOST_CHECK(enterprise::ShouldExportUtxoSet(964012, 964012, true, true));
+    // An IBD node must still fill missing aligned heights behind a newer catch-up row.
+    BOOST_CHECK(enterprise::ShouldExportUtxoSet(358848, 964014, false, false));
+    BOOST_CHECK(!enterprise::ShouldExportUtxoSet(358848, 964014, true, false));
 }
 
 BOOST_AUTO_TEST_CASE(export_interval_matches_historical_series)

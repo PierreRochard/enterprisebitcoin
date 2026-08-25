@@ -40,8 +40,16 @@ pqxx::connection ConnectPg()
     return pqxx::connection{enterprise::PgConnectionString()};
 }
 
+void PinPublicSearchPath(pqxx::work& w)
+{
+    // The enterprise conninfo pins search_path to pg_catalog,public. Unqualified
+    // CREATE TABLE then tries to write pg_catalog. Force public for this transaction.
+    w.exec("SELECT pg_catalog.set_config('search_path', 'public', true)");
+}
+
 void EnsureUtxoStatsTables(pqxx::work& w)
 {
+    PinPublicSearchPath(w);
     w.exec(R"sql(
         CREATE TABLE IF NOT EXISTS utxo_age (
             id SERIAL PRIMARY KEY,
@@ -135,6 +143,7 @@ std::string FormatMedianTimeUtc(int64_t median_time)
 std::optional<double> LookupUsdPrice(pqxx::connection& c, const std::string& median_time)
 {
     pqxx::work w{c};
+    PinPublicSearchPath(w);
     c.prepare("UtxoStatsPrice", R"sql(
         SELECT price
         FROM prices
@@ -183,9 +192,12 @@ double PercentRounded(double part, double total)
 
 bool ShouldExportUtxoSet(int height, int64_t db_max_height, bool height_already_exported, bool force)
 {
-    if (height < 0) return false;
+    if (height <= 0) return false;
     if (height_already_exported && !force) return false;
     if (force) return true;
+    // Aligned heights are historical snapshots. Export them even when a newer
+    // unaligned catch-up row already exists, so an IBD node can fill gaps.
+    if (height > 0 && height % UTXO_EXPORT_INTERVAL == 0) return true;
     if (db_max_height < 0) return true;
     return (height / UTXO_EXPORT_INTERVAL) > (db_max_height / UTXO_EXPORT_INTERVAL);
 }
