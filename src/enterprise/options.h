@@ -18,5 +18,8 @@ static constexpr int DEFAULT_ENTERPRISE_PRICE_FINALIZATION_BATCH_SIZE{256};
 // target ten-minute interval and remains comfortably inside the configured
 // 20 GiB pruned block store for the expected one-day finalization delay.
 static constexpr int DEFAULT_ENTERPRISE_PRICE_FINALIZATION_LOOKBACK{2016};
+//! Snapshot the live UTXO set into Postgres this often. 4032 blocks is four
+//! weeks at 1008 blocks/week and matches the historical utxo_age series.
+static constexpr int64_t UTXO_EXPORT_INTERVAL{4032};
 
 #endif // BITCOIN_ENTERPRISE_OPTIONS_H

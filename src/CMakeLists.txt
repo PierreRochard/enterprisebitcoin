@@ -197,7 +197,9 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
   $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/enterprise_index.cpp>
   $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/mempool_to_sql.cpp>
   $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/pg.cpp>
+  $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/rpc.cpp>
   $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/utxo_set_to_sql.cpp>
+  $<$<BOOL:${WITH_ENTERPRISE_SQL}>:enterprise/utxo_stats.cpp>
   flatfile.cpp
   headerssync.cpp
   httprpc.cpp

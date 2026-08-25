@@ -237,6 +237,8 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "gettxoutproof", 0, "txids" },
     { "gettxoutsetinfo", 1, "hash_or_height", ParamFormat::JSON_OR_STRING },
     { "gettxoutsetinfo", 2, "use_index"},
+    { "exportutxostats", 0, "force" },
+    { "exportutxostats", 1, "include_optional" },
     { "dumptxoutset", 0, "path", ParamFormat::STRING },
     { "dumptxoutset", 1, "type", ParamFormat::STRING },
     { "dumptxoutset", 2, "options" },

@@ -146,6 +146,7 @@ if(WITH_ENTERPRISE_SQL)
     enterprise_bootstrap_tests.cpp
     enterprise_denomination_classifier_tests.cpp
     enterprise_pg_config_tests.cpp
+    enterprise_utxo_stats_tests.cpp
   )
 endif()
 

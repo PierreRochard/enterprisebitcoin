@@ -4,6 +4,30 @@ Enterprise SQL Export
 This build can export block, mempool, and periodic UTXO statistics to
 PostgreSQL when `WITH_ENTERPRISE_SQL` is enabled.
 
+UTXO age histograms
+==
+
+`public.utxo_age` is a point-in-time scan of the live chainstate, not a
+block-delta export. The Traders versus HODLers, Median Hodl, and UTXO Age
+Heatmap charts read that table.
+
+`-utxostats` defaults to the value of `-enterpriseindex`. When enabled, a
+background thread snapshots the current UTXO set:
+
+- once at startup if Postgres is more than 4032 blocks behind the tip
+- again whenever an aligned height (`height % 4032 == 0`) is connected
+
+The scan uses `CoinsDB()` after flushing `CoinsTip()`, does not run on the
+validation thread, and skips heights already present in `utxo_age`. The
+background thread writes `utxo_age` only. `exportutxostats` can also write
+`utxo_balances` / script-type / USD tables; missing USD prices skip those
+tables rather than failing the snapshot. Percentile tables are not written
+(they required holding every UTXO value in RAM).
+
+`exportutxostats` force-exports the current tip on demand. Historical heights
+cannot be reconstructed from a pruned node. Filling the 2015–present gap
+requires a genesis pruned IBD with `-utxostats=1`.
+
 When `-enterpriseindex=1` is enabled and `-prune` is not set explicitly, the
 node defaults to `-prune=20000`, keeping block and undo files to a 20 GB target.
 Set `-prune=<MiB>` explicitly to choose a different target.

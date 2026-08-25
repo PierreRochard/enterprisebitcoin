@@ -26,6 +26,8 @@
 #include <enterprise/enterprise_index.h>
 #include <enterprise/options.h>
 #include <enterprise/pg_config.h>
+#include <enterprise/rpc.h>
+#include <enterprise/utxo_stats.h>
 #endif
 #include <httprpc.h>
 #include <httpserver.h>
@@ -112,6 +114,7 @@
 #include <algorithm>
 #include <any>
 #include <cerrno>
+#include <memory>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -400,6 +403,13 @@ void Shutdown(NodeContext& node)
     if (g_txospenderindex) g_txospenderindex.reset();
     if (g_coin_stats_index) g_coin_stats_index.reset();
 #ifdef ENABLE_ENTERPRISE_SQL
+    if (enterprise::g_utxo_stats) {
+        if (node.validation_signals) {
+            node.validation_signals->UnregisterSharedValidationInterface(enterprise::g_utxo_stats);
+        }
+        enterprise::g_utxo_stats->Stop();
+        enterprise::g_utxo_stats.reset();
+    }
     if (g_enterprise_index) g_enterprise_index.reset();
 #endif
     DestroyAllBlockFilterIndexes();
@@ -543,6 +553,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-enterprisemempoolexport", strprintf("Export mempool add/remove events synchronously to PostgreSQL. Disabled by default so a PostgreSQL outage cannot stall mempool mutation paths (default: %u)", DEFAULT_ENTERPRISE_MEMPOOL_EXPORT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-enterprisespoolmax=<MiB>", strprintf("Maximum durable enterprise block spool size before validation waits for the Postgres writer. Set to 0 to disable backpressure (default: %u)", DEFAULT_ENTERPRISE_SPOOL_MAX_MIB), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-enterpriseconfig=<file>", "Read enterprise PostgreSQL connection settings exclusively from this KEY=VALUE file. Relative paths are resolved under the network datadir. When unset, <datadir>/<chain>/enterprise.env overrides .env in the working directory, and PGDB, PGUSER, PGPASSWORD, PGHOST, and PGPORT environment variables override those implicit files.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-utxostats", strprintf("Export UTXO age histograms to PostgreSQL every %d blocks. Defaults to the value of -enterpriseindex. Historical heights cannot be reconstructed on a pruned node; only the live chainstate is scanned (default: %u)", UTXO_EXPORT_INTERVAL, DEFAULT_ENTERPRISEINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #endif
     argsman.AddArg("-conf=<file>", strprintf("Specify path to read-only configuration file. Relative paths will be prefixed by datadir location (only useable from command line, not configuration file) (default: %s)", BITCOIN_CONF_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-datadir=<dir>", "Specify data directory", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
@@ -1606,6 +1617,9 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
      * available in the GUI RPC console even if external calls are disabled.
      */
     RegisterAllCoreRPCCommands(tableRPC);
+#ifdef ENABLE_ENTERPRISE_SQL
+    enterprise::RegisterEnterpriseRPCCommands(tableRPC);
+#endif
     for (const auto& client : node.chain_clients) {
         client->registerRpcs();
     }
@@ -2018,6 +2032,15 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
         g_enterprise_index = std::make_unique<EnterpriseIndex>(interfaces::MakeChain(node), /*cache_size=*/0, false, do_reindex);
         node.indexes.emplace_back(g_enterprise_index.get());
     }
+    const bool utxostats_enabled{args.GetBoolArg("-utxostats", args.GetBoolArg("-enterpriseindex", DEFAULT_ENTERPRISEINDEX))};
+    if (utxostats_enabled) {
+        enterprise::g_utxo_stats = std::make_shared<enterprise::UtxoStatsExporter>(node);
+        if (node.validation_signals) {
+            node.validation_signals->RegisterSharedValidationInterface(enterprise::g_utxo_stats);
+        }
+        enterprise::g_utxo_stats->Start();
+        LogInfo("utxostats: background exporter enabled (interval %d blocks)", UTXO_EXPORT_INTERVAL);
+    }
 #endif
 
     // Init indexes
@@ -2170,6 +2193,12 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     if (ShutdownRequested(node)) {
         return true;
     }
+
+#ifdef ENABLE_ENTERPRISE_SQL
+    if (enterprise::g_utxo_stats) {
+        enterprise::g_utxo_stats->RequestCatchUp();
+    }
+#endif
 
     // ********************************************************* Step 12: start node
 
