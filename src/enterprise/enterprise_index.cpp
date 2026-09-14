@@ -483,6 +483,23 @@ bool EnterpriseIndex::ProcessSpoolFile(enterprise::PgSession& session, const fs:
     // its transactional write-mode check resolves concurrent inserts and
     // classifier updates before it changes the row.
 
+    // Take cs_main before opening a PostgreSQL transaction. Waiting for the
+    // lock while idle-in-transaction lets IBD's ConnectTip trip
+    // idle_in_transaction_session_timeout and stall the spool writer.
+    const CBlockIndex* pindex{nullptr};
+    if (delta.event_type != EnterpriseSpoolEventType::DISCONNECT) {
+        pindex = WITH_LOCK(::cs_main, return m_chainstate->m_blockman.LookupBlockIndex(delta.block_hash));
+        if (!pindex) {
+            LogError("enterprise: cannot find block index entry for spooled block %s", delta.block_hash.ToString());
+            return false;
+        }
+        if (pindex->nHeight != delta.height) {
+            LogError("enterprise: spooled block %s height mismatch: index=%d spool=%d",
+                     delta.block_hash.ToString(), pindex->nHeight, delta.height);
+            return false;
+        }
+    }
+
     try {
         // Historical backfill transactions are idempotent, and a crash after
         // the block update is repaired by the covered-spool reconciliation
@@ -500,19 +517,6 @@ bool EnterpriseIndex::ProcessSpoolFile(enterprise::PgSession& session, const fs:
         if (delta.event_type == EnterpriseSpoolEventType::DISCONNECT) {
             DeleteBlockFromSql(session, work, delta.block_hash);
         } else {
-            const CBlockIndex* pindex{WITH_LOCK(::cs_main, return m_chainstate->m_blockman.LookupBlockIndex(delta.block_hash))};
-            if (!pindex) {
-                throw std::runtime_error(strprintf(
-                    "cannot find block index entry for spooled block %s",
-                    delta.block_hash.ToString()));
-            }
-            if (pindex->nHeight != delta.height) {
-                throw std::runtime_error(strprintf(
-                    "spooled block %s height mismatch: index=%d spool=%d",
-                    delta.block_hash.ToString(),
-                    pindex->nHeight,
-                    delta.height));
-            }
             BlockToSql block_to_sql{session, work, pindex, delta.block, delta.undo, delta.ScriptFlags()};
         }
         enterprise::MarkIngestSucceeded(session, work, delta, path, delta.source);
@@ -548,8 +552,18 @@ bool EnterpriseIndex::ReconcileGaps()
     // absent from PostgreSQL and CustomAppend will spool them in order. Gap
     // repair at this point would queue the same block deltas a second time.
     if (!GetSummary().synced) return false;
+    // IBD holds cs_main across many ConnectTip calls. Blocking here starves the
+    // postgres writer while new spool files accumulate, and can deadlock once
+    // spool backpressure waits for the writer with cs_main still held.
+    if (!m_spool.Pending().empty()) return false;
+    if (m_chainstate && m_chainstate->m_chainman.IsInitialBlockDownload()) return false;
 
-    const int chain_tip_height{WITH_LOCK(::cs_main, return m_chainstate->m_chain.Height())};
+    int chain_tip_height{-1};
+    {
+        TRY_LOCK(::cs_main, lock_cs_main);
+        if (!lock_cs_main) return false;
+        chain_tip_height = m_chainstate->m_chain.Height();
+    }
     std::vector<int> gaps;
     try {
         gaps = enterprise::FindBlockTableGaps(chain_tip_height, DEFAULT_ENTERPRISE_GAP_BATCH_SIZE);

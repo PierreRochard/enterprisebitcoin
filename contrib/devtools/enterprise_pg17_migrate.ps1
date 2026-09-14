@@ -39,8 +39,8 @@ BEGIN
         RAISE EXCEPTION 'connected database is not the expected database';
     END IF;
     IF current_setting('server_version_num')::integer < 170000 OR
-       current_setting('server_version_num')::integer >= 180000 THEN
-        RAISE EXCEPTION 'PostgreSQL major version 17 is required';
+       current_setting('server_version_num')::integer >= 190000 THEN
+        RAISE EXCEPTION 'PostgreSQL major version 17 or 18 is required';
     END IF;
     IF session_user <> 'postgres' OR NOT EXISTS (
         SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = session_user AND rolsuper

@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 class CBlockIndex;
 class CCoinsViewCursor;
@@ -29,6 +31,18 @@ struct UtxoSetExportStats {
     bool wrote_optional{false};
 };
 
+struct UtxoAgeHistogramRow {
+    unsigned int weeks_old{0};
+    CAmount utxo_value{0};
+    uint64_t utxo_count{0};
+    int64_t utxo_size{0};
+};
+
+struct UtxoAgeHistogram {
+    UtxoSetExportStats stats;
+    std::vector<UtxoAgeHistogramRow> rows;
+};
+
 //! Age in whole weeks, matching the original exporter: round((tip-coin)/1008).
 unsigned int CoinAgeWeeks(int snapshot_height, int coin_height);
 
@@ -45,6 +59,16 @@ bool ShouldExportUtxoSet(int height, int64_t db_max_height, bool height_already_
 
 int64_t MaxExportedUtxoHeight();
 bool UtxoHeightExported(int height);
+void LoadExportedUtxoHeights(std::unordered_set<int>& heights, int64_t& max_height);
+
+//! Scan the live UTXO set into an in-memory age histogram. Does not open PostgreSQL.
+UtxoAgeHistogram ScanUtxoAgeFromCursor(
+    const CBlockIndex& block_index,
+    CCoinsViewCursor& cursor,
+    const std::function<void()>& interruption_point);
+
+//! INSERT the histogram on the calling thread. Must not run on the validation thread.
+void WriteUtxoAgeHistogram(const UtxoAgeHistogram& histogram);
 
 UtxoSetExportStats ExportUtxoSetFromCursor(
     const CBlockIndex& block_index,

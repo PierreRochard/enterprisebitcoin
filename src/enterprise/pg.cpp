@@ -514,8 +514,8 @@ void ValidateEnterpriseSchema()
     )sql")};
     const auto settings_row{settings.front()};
     const int server_version{settings_row[0].as<int>()};
-    if (server_version < 170000 || server_version >= 180000) {
-        throw std::runtime_error(strprintf("enterprise SQL requires PostgreSQL 17.x (server_version_num=%d)", server_version));
+    if (server_version < 170000 || server_version >= 190000) {
+        throw std::runtime_error(strprintf("enterprise SQL requires PostgreSQL 17 or 18 (server_version_num=%d)", server_version));
     }
     if (settings_row[1].as<std::string>() != "enterprise-bitcoind" ||
         settings_row[2].as<std::string>() != "on" ||

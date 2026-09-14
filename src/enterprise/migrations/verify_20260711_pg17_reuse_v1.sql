@@ -14,10 +14,10 @@ SELECT current_database() = :'expected_database' AS expected_database_matches \g
 \endif
 
 SELECT current_setting('server_version_num')::integer >= 170000
-       AND current_setting('server_version_num')::integer < 180000 AS server_is_pg17 \gset
+       AND current_setting('server_version_num')::integer < 190000 AS server_is_pg17 \gset
 \if :server_is_pg17
 \else
-    \echo 'Refusing verification: PostgreSQL major version 17 is required.'
+    \echo 'Refusing verification: PostgreSQL major version 17 or 18 is required.'
     \quit 3
 \endif
 

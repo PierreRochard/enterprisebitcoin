@@ -23,16 +23,23 @@ BOOST_AUTO_TEST_CASE(connection_string_pins_libpq_routing)
     };
 
     const std::string connection{enterprise::BuildPgConnectionString(values)};
-    BOOST_CHECK_NE(connection.find(" host='127.0.0.1'"), std::string::npos);
-    BOOST_CHECK_NE(connection.find(" hostaddr='127.0.0.1'"), std::string::npos);
+    BOOST_CHECK_NE(connection.find(" host='/tmp'"), std::string::npos);
+    BOOST_CHECK_EQUAL(connection.find(" hostaddr="), std::string::npos);
     BOOST_CHECK_EQUAL(connection.find(" service="), std::string::npos);
+    BOOST_CHECK_NE(connection.find(" gssencmode='disable'"), std::string::npos);
+    BOOST_CHECK_NE(connection.find(" sslmode='disable'"), std::string::npos);
     BOOST_CHECK_NE(connection.find(" options='-c synchronous_commit=on"), std::string::npos);
 
     auto localhost_values{values};
     localhost_values["PGHOST"] = "localhost";
     const std::string localhost_connection{enterprise::BuildPgConnectionString(localhost_values)};
-    BOOST_CHECK_NE(localhost_connection.find(" host='localhost'"), std::string::npos);
-    BOOST_CHECK_NE(localhost_connection.find(" hostaddr='127.0.0.1'"), std::string::npos);
+    BOOST_CHECK_NE(localhost_connection.find(" host='/tmp'"), std::string::npos);
+    BOOST_CHECK_EQUAL(localhost_connection.find(" hostaddr="), std::string::npos);
+
+    auto socket_values{values};
+    socket_values["PGHOST"] = "/var/run/postgresql";
+    const std::string socket_connection{enterprise::BuildPgConnectionString(socket_values)};
+    BOOST_CHECK_NE(socket_connection.find(" host='/var/run/postgresql'"), std::string::npos);
 
     auto remote_values{values};
     remote_values["PGHOST"] = "database.example.com";

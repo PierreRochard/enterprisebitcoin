@@ -12,17 +12,23 @@ block-delta export. The Traders versus HODLers, Median Hodl, and UTXO Age
 Heatmap charts read that table.
 
 `-utxostats` defaults to the value of `-enterpriseindex`. When enabled, a
-background thread snapshots the current UTXO set:
+background thread owns every PostgreSQL connection for UTXO stats:
 
 - once at startup if Postgres is more than 4032 blocks behind the tip
-- again whenever an aligned height (`height % 4032 == 0`) is connected
+- again whenever an aligned height (`height % 4032 == 0`) is connected after IBD
 
-The scan uses `CoinsDB()` after flushing `CoinsTip()`, does not run on the
-validation thread, and skips heights already present in `utxo_age`. The
-background thread writes `utxo_age` only. `exportutxostats` can also write
-`utxo_balances` / script-type / USD tables; missing USD prices skip those
-tables rather than failing the snapshot. Percentile tables are not written
-(they required holding every UTXO value in RAM).
+During IBD, `ConnectTip` scans the live chainstate at each aligned height on
+the message thread (so the snapshot matches that tip) and hands the histogram
+to the `utxostats` thread for INSERT. libpq must not run on the validation
+thread: connecting from `msghand` forks a multithreaded `bitcoind` on macOS
+and has corrupted LevelDB/coins state. Skip checks use an in-memory catalog
+loaded at thread start. Heights already in `utxo_age` are not scanned again.
+
+The scan uses `CoinsDB()` after flushing `CoinsTip()`. The background thread
+writes `utxo_age` only. `exportutxostats` can also write `utxo_balances` /
+script-type / USD tables; missing USD prices skip those tables rather than
+failing the snapshot. Percentile tables are not written (they required holding
+every UTXO value in RAM).
 
 `exportutxostats` force-exports the current tip on demand. Historical heights
 cannot be reconstructed from a pruned node.
@@ -35,6 +41,10 @@ heights already in `utxo_age`. Tear the datadir down when the gap is closed.
 When `-enterpriseindex=1` is enabled and `-prune` is not set explicitly, the
 node defaults to `-prune=20000`, keeping block and undo files to a 20 GB target.
 Set `-prune=<MiB>` explicitly to choose a different target.
+
+PostgreSQL connections for this exporter use a unix socket (never TCP
+`hostaddr`) with `gssencmode=disable` and `sslmode=disable`, because libpq GSS
+on macOS `fork()`s and that has aborted IBD.
 
 The enterprise index also bounds its durable block spool. By default
 `-enterprisespoolmax=1024` pauses validation when the spool exceeds 1 GiB, then

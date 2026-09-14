@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -37,7 +38,10 @@ using UsdBalanceBucket = std::tuple<double, uint64_t, int64_t>;
 
 pqxx::connection ConnectPg()
 {
-    return pqxx::connection{enterprise::PgConnectionString()};
+    LogInfo("utxostats: opening PostgreSQL connection");
+    pqxx::connection connection{enterprise::PgConnectionString()};
+    LogInfo("utxostats: PostgreSQL connection opened");
+    return connection;
 }
 
 void PinPublicSearchPath(pqxx::work& w)
@@ -234,6 +238,118 @@ bool UtxoHeightExported(int height)
     }
 }
 
+void LoadExportedUtxoHeights(std::unordered_set<int>& heights, int64_t& max_height)
+{
+    pqxx::connection c{ConnectPg()};
+    pqxx::work w{c};
+    EnsureUtxoStatsTables(w);
+    const auto res = w.exec("SELECT DISTINCT block_height FROM utxo_age");
+    w.commit();
+    heights.clear();
+    max_height = -1;
+    for (const auto& row : res) {
+        if (row[0].is_null()) continue;
+        const int64_t height{row[0].as<int64_t>()};
+        heights.insert(static_cast<int>(height));
+        if (height > max_height) max_height = height;
+    }
+}
+
+UtxoAgeHistogram ScanUtxoAgeFromCursor(
+    const CBlockIndex& block_index,
+    CCoinsViewCursor& cursor,
+    const std::function<void()>& interruption_point)
+{
+    UtxoAgeHistogram histogram;
+    histogram.stats.height = block_index.nHeight;
+    histogram.stats.block_hash = block_index.GetBlockHash();
+    histogram.stats.median_time = FormatMedianTimeUtc(block_index.GetMedianTimePast());
+
+    std::map<unsigned int, AgeBucket> age_map;
+    CAmount total_value{0};
+    uint64_t total_count{0};
+    int64_t total_size{0};
+
+    LogInfo("utxostats: scanning UTXO set at height %d", histogram.stats.height);
+    const auto started{NodeClock::now()};
+    uint64_t scanned{0};
+    while (cursor.Valid()) {
+        if (interruption_point && (scanned % 10000 == 0)) {
+            interruption_point();
+        }
+        Coin coin;
+        if (!cursor.GetValue(coin)) {
+            throw std::runtime_error("unable to read UTXO set value");
+        }
+        if (coin.IsSpent()) {
+            cursor.Next();
+            continue;
+        }
+
+        const unsigned int weeks_old{CoinAgeWeeks(histogram.stats.height, static_cast<int>(coin.nHeight))};
+        const CAmount coin_value{coin.out.nValue};
+        const int64_t utxo_size{static_cast<int64_t>(GetSerializeSize(coin.out)) + static_cast<int64_t>(PER_UTXO_OVERHEAD)};
+
+        total_value += coin_value;
+        total_count += 1;
+        total_size += utxo_size;
+
+        auto& age_tuple = age_map[weeks_old];
+        std::get<0>(age_tuple) += coin_value;
+        std::get<1>(age_tuple) += 1;
+        std::get<2>(age_tuple) += utxo_size;
+
+        ++scanned;
+        if (scanned % 5000000 == 0) {
+            LogInfo("utxostats: scanned %u coins at height %d", scanned, histogram.stats.height);
+        }
+        cursor.Next();
+    }
+
+    histogram.stats.utxo_count = total_count;
+    histogram.stats.total_value = total_value;
+    histogram.stats.total_size = total_size;
+    histogram.rows.reserve(age_map.size());
+    for (const auto& [weeks_old, bucket] : age_map) {
+        histogram.rows.push_back({weeks_old, std::get<0>(bucket), std::get<1>(bucket), std::get<2>(bucket)});
+    }
+    histogram.stats.age_buckets = histogram.rows.size();
+
+    const auto elapsed{Ticks<std::chrono::milliseconds>(NodeClock::now() - started) / 1000.0};
+    LogInfo("utxostats: scanned %u coins at height %d in %.1f s", total_count, histogram.stats.height, elapsed);
+    return histogram;
+}
+
+void WriteUtxoAgeHistogram(const UtxoAgeHistogram& histogram)
+{
+    const auto& stats{histogram.stats};
+    pqxx::connection c{ConnectPg()};
+    pqxx::work w{c};
+    EnsureUtxoStatsTables(w);
+    c.prepare("UtxoAgeInsert", R"sql(
+        INSERT INTO utxo_age (
+            block_height, median_time, weeks_old, utxo_count, utxo_value, utxo_size,
+            utxo_count_percent, utxo_value_percent, utxo_size_percent
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (block_height, weeks_old) DO NOTHING
+    )sql");
+    for (const auto& row : histogram.rows) {
+        enterprise::ExecPrepared(w,
+            "UtxoAgeInsert",
+            stats.height,
+            stats.median_time,
+            static_cast<int64_t>(row.weeks_old),
+            static_cast<int64_t>(row.utxo_count),
+            row.utxo_value,
+            row.utxo_size,
+            PercentRounded(static_cast<double>(row.utxo_count), static_cast<double>(stats.utxo_count)),
+            PercentRounded(static_cast<double>(row.utxo_value), static_cast<double>(stats.total_value)),
+            PercentRounded(static_cast<double>(row.utxo_size), static_cast<double>(stats.total_size)));
+    }
+    w.commit();
+    LogInfo("utxostats: wrote %u age buckets for height %d", stats.age_buckets, stats.height);
+}
+
 UtxoSetExportStats ExportUtxoSetFromCursor(
     const CBlockIndex& block_index,
     CCoinsViewCursor& cursor,
@@ -249,6 +365,12 @@ UtxoSetExportStats ExportUtxoSetFromCursor(
         stats.skipped = true;
         stats.skip_reason = "already exported";
         return stats;
+    }
+
+    if (!include_optional_tables) {
+        UtxoAgeHistogram histogram{ScanUtxoAgeFromCursor(block_index, cursor, interruption_point)};
+        WriteUtxoAgeHistogram(histogram);
+        return histogram.stats;
     }
 
     std::map<unsigned int, AgeBucket> age_map;

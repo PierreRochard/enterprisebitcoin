@@ -35,6 +35,23 @@ inline std::string QuotePgConnectionValue(std::string_view value)
     return quoted;
 }
 
+inline void SetPgEnvVar(const char* name, const char* value)
+{
+#ifdef _WIN32
+    if (_putenv_s(name, value != nullptr ? value : "") != 0) {
+#else
+    if (value == nullptr || value[0] == '\0') {
+        if (unsetenv(name) != 0) {
+            throw std::runtime_error("failed to clear ambient libpq variable " + std::string{name});
+        }
+        return;
+    }
+    if (setenv(name, value, /*overwrite=*/1) != 0) {
+#endif
+        throw std::runtime_error("failed to set ambient libpq variable " + std::string{name});
+    }
+}
+
 inline void SanitizePgRoutingEnvironment()
 {
     // These libpq fallbacks can redirect or supplement an otherwise explicit
@@ -43,14 +60,24 @@ inline void SanitizePgRoutingEnvironment()
     static constexpr std::array<const char*, 3> ROUTING_VARIABLES{
         "PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE"};
     for (const char* name : ROUTING_VARIABLES) {
-#ifdef _WIN32
-        if (_putenv_s(name, "") != 0) {
-#else
-        if (unsetenv(name) != 0) {
-#endif
-            throw std::runtime_error("failed to clear ambient libpq routing variable " + std::string{name});
-        }
+        SetPgEnvVar(name, "");
     }
+    // libpq GSS/Kerberos and SSL setup can fork() during connect. Forking a
+    // multithreaded bitcoind corrupts LevelDB/coins state (macOS reports
+    // "crashed on child side of fork pre-exec").
+    SetPgEnvVar("PGGSSENCMODE", "disable");
+    SetPgEnvVar("PGSSLMODE", "disable");
+}
+
+inline std::string PgUnixSocketDirectory(std::string_view host)
+{
+    if (host.starts_with('/')) return std::string{host};
+    if (host == "127.0.0.1" || host == "::1" || host == "localhost") {
+        // Homebrew and most local Postgres installs listen in /tmp.
+        // TCP loopback is intentionally not used: it triggers GSS/Kerberos.
+        return "/tmp";
+    }
+    throw std::runtime_error("enterprise PostgreSQL host must be loopback or a unix socket directory");
 }
 
 inline std::string PgHostAddress(std::string_view host)
@@ -104,13 +131,13 @@ inline std::string BuildPgConnectionString(const std::map<std::string, std::stri
     conn_stream << "dbname=" << QuotePgConnectionValue(values.at("PGDB"))
                 << " user=" << QuotePgConnectionValue(values.at("PGUSER"))
                 << " password=" << QuotePgConnectionValue(values.at("PGPASSWORD"))
-                << " host=" << QuotePgConnectionValue(values.at("PGHOST"))
-                // Pin the socket destination independently of DNS and of any
-                // ambient libpq hostaddr default.
-                << " hostaddr=" << QuotePgConnectionValue(PgHostAddress(values.at("PGHOST")))
+                // Unix socket only. hostaddr would force TCP and GSS on macOS.
+                << " host=" << QuotePgConnectionValue(PgUnixSocketDirectory(values.at("PGHOST")))
                 << " port=" << QuotePgConnectionValue(values.at("PGPORT"))
                 << " application_name=" << QuotePgConnectionValue("enterprise-bitcoind")
                 << " connect_timeout=" << QuotePgConnectionValue("10")
+                << " gssencmode=" << QuotePgConnectionValue("disable")
+                << " sslmode=" << QuotePgConnectionValue("disable")
                 << " options=" << QuotePgConnectionValue(
                        "-c synchronous_commit=on"
                        " -c search_path=pg_catalog,public"
