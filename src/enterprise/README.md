@@ -50,6 +50,17 @@ To fill missing 4032-block snapshots, run a throwaway pruned IBD with
 chainstate at each aligned height before connecting the next block, and skips
 heights already in `utxo_age`. Tear the datadir down when the gap is closed.
 
+When the main node is unpruned, sync the throwaway node from it instead of
+the network: give the main node a localhost-only listener
+(`listen=1`, `whitebind=download,noban@127.0.0.1:28333`, `discover=0`,
+`listenonion=0`), and start the throwaway with `connect=127.0.0.1:28333`,
+`dnsseed=0`, `fixedseeds=0`, `prune=10000`, `enterpriseindex=0`,
+`utxostats=1`. The September 2026 address-histogram backfill covered all 240
+aligned heights this way in about six hours with no internet traffic. Keep the
+throwaway chainstate on SSD. `-loadblock` cannot replace this: it reads block
+files without the source datadir's `xor.dat` obfuscation key and drops blocks
+whose parent it has not seen yet.
+
 When `-enterpriseindex=1` is enabled and `-prune` is not set explicitly, the
 node defaults to `-prune=20000`, keeping block and undo files to a 20 GB target.
 Set `-prune=<MiB>` explicitly to choose a different target.
