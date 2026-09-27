@@ -3,16 +3,19 @@
 #include <chain.h>
 #include <coins.h>
 #include <consensus/amount.h>
+#include <crypto/siphash.h>
 #include <enterprise/pg_config.h>
 #include <enterprise/pqxx_compat.h>
 #include <logging.h>
 #include <primitives/transaction.h>
+#include <script/script.h>
 #include <script/solver.h>
 #include <serialize.h>
 #include <uint256.h>
 #include <util/log.h>
 #include <util/time.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -20,6 +23,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -31,6 +35,10 @@ namespace {
 
 constexpr size_t PER_UTXO_OVERHEAD = sizeof(COutPoint) + sizeof(uint32_t) + sizeof(bool);
 constexpr double BLOCKS_PER_WEEK = 1008.0;
+constexpr int ADDRESS_BINS_PER_DECADE = 100;
+// Fixed keys keep script hashes, and therefore any collision, reproducible across scans.
+constexpr uint64_t SCRIPT_KEY_K0{0x656e746572707269};
+constexpr uint64_t SCRIPT_KEY_K1{0x7365626974636f69};
 
 using AgeBucket = std::tuple<CAmount, uint64_t, int64_t>;
 using BalanceBucket = std::tuple<CAmount, uint64_t, int64_t>;
@@ -128,6 +136,49 @@ void EnsureUtxoStatsTables(pqxx::work& w)
         CREATE UNIQUE INDEX IF NOT EXISTS utxo_types_block_height_type_idx
             ON utxo_script_types (block_height, script_type)
     )sql");
+    w.exec(R"sql(
+        CREATE TABLE IF NOT EXISTS address_balance_histogram (
+            block_height BIGINT NOT NULL,
+            block_hash TEXT NOT NULL,
+            median_time TIMESTAMP NOT NULL,
+            lower_bound BIGINT NOT NULL,
+            upper_bound BIGINT NOT NULL,
+            address_count BIGINT NOT NULL,
+            balance BIGINT NOT NULL,
+            PRIMARY KEY (block_height, lower_bound)
+        )
+    )sql");
+}
+
+// Heights with both a utxo_age snapshot and an address-balance histogram.
+// Heights that only have utxo_age rows are rescanned to fill the histogram.
+constexpr const char* EXPORTED_HEIGHTS_SQL{R"sql(
+    SELECT block_height FROM utxo_age
+    INTERSECT
+    SELECT block_height FROM address_balance_histogram
+)sql"};
+
+void InsertAddressBalanceHistogram(pqxx::connection& c, pqxx::work& w, const enterprise::UtxoSetExportStats& stats,
+    const std::vector<enterprise::AddressBalanceBin>& bins)
+{
+    c.prepare("AddressBalanceInsert", R"sql(
+        INSERT INTO address_balance_histogram (
+            block_height, block_hash, median_time, lower_bound, upper_bound, address_count, balance
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (block_height, lower_bound) DO NOTHING
+    )sql");
+    const std::string block_hash{stats.block_hash.GetHex()};
+    for (const auto& bin : bins) {
+        enterprise::ExecPrepared(w,
+            "AddressBalanceInsert",
+            stats.height,
+            block_hash,
+            stats.median_time,
+            bin.lower_bound,
+            bin.upper_bound,
+            static_cast<int64_t>(bin.address_count),
+            bin.balance);
+    }
 }
 
 std::string FormatMedianTimeUtc(int64_t median_time)
@@ -194,6 +245,87 @@ double PercentRounded(double part, double total)
     return std::round(part / total * 10000.0) / 100.0;
 }
 
+uint64_t ScriptBalanceMap::Key(const CScript& script)
+{
+    const uint64_t key{CSipHasher(SCRIPT_KEY_K0, SCRIPT_KEY_K1).Write(std::span{script.data(), script.size()}).Finalize()};
+    return key == EMPTY ? 1 : key;
+}
+
+void ScriptBalanceMap::Add(uint64_t key, CAmount value)
+{
+    if ((m_size + 1) * 2 > m_slots.size()) Grow();
+    const size_t mask{m_slots.size() - 1};
+    for (size_t i{key & mask};; i = (i + 1) & mask) {
+        Slot& slot{m_slots[i]};
+        if (slot.key == key) {
+            slot.balance += value;
+            return;
+        }
+        if (slot.key == EMPTY) {
+            slot.key = key;
+            slot.balance = value;
+            ++m_size;
+            return;
+        }
+    }
+}
+
+void ScriptBalanceMap::Grow()
+{
+    std::vector<Slot> old;
+    old.swap(m_slots);
+    m_slots.assign(old.empty() ? 1024 : old.size() * 2, Slot{});
+    m_size = 0;
+    for (const Slot& slot : old) {
+        if (slot.key != EMPTY) Add(slot.key, slot.balance);
+    }
+}
+
+const std::vector<CAmount>& AddressBalanceBinEdges()
+{
+    static const std::vector<CAmount> edges{[] {
+        std::vector<CAmount> out;
+        CAmount power{1};
+        // 10^16 satoshis is past MAX_MONEY, so the last bin is open-ended in practice.
+        for (int decade{0}; decade < 16; ++decade, power *= 10) {
+            out.push_back(power);
+            for (int step{1}; step < ADDRESS_BINS_PER_DECADE; ++step) {
+                const long double edge{std::pow(10.0L, decade + static_cast<long double>(step) / ADDRESS_BINS_PER_DECADE)};
+                const CAmount lower{static_cast<CAmount>(std::ceil(edge))};
+                if (lower > out.back() && lower < power * 10) out.push_back(lower);
+            }
+        }
+        out.push_back(power);
+        return out;
+    }()};
+    return edges;
+}
+
+size_t AddressBalanceBinIndex(CAmount balance)
+{
+    const auto& edges{AddressBalanceBinEdges()};
+    const auto it{std::upper_bound(edges.begin(), edges.end() - 1, std::max<CAmount>(balance, 1))};
+    return static_cast<size_t>(it - edges.begin()) - 1;
+}
+
+std::vector<AddressBalanceBin> BuildAddressBalanceHistogram(const ScriptBalanceMap& balances)
+{
+    const auto& edges{AddressBalanceBinEdges()};
+    std::vector<AddressBalanceBin> bins(edges.size() - 1);
+    for (size_t i{0}; i < bins.size(); ++i) {
+        bins[i].lower_bound = edges[i];
+        bins[i].upper_bound = edges[i + 1];
+    }
+    balances.ForEach([&](uint64_t, CAmount balance) {
+        if (balance <= 0) return;
+        auto& bin{bins[AddressBalanceBinIndex(balance)]};
+        bin.address_count += 1;
+        bin.balance += balance;
+    });
+    std::erase_if(bins, [](const AddressBalanceBin& bin) { return bin.address_count == 0; });
+    return bins;
+}
+
 bool ShouldExportUtxoSet(int height, int64_t db_max_height, bool height_already_exported, bool force)
 {
     if (height <= 0) return false;
@@ -212,7 +344,7 @@ int64_t MaxExportedUtxoHeight()
         pqxx::connection c{ConnectPg()};
         pqxx::work w{c};
         EnsureUtxoStatsTables(w);
-        const auto res = w.exec("SELECT COALESCE(MAX(block_height), -1) FROM utxo_age");
+        const auto res = w.exec(std::string{"SELECT COALESCE(MAX(block_height), -1) FROM ("} + EXPORTED_HEIGHTS_SQL + ") exported");
         w.commit();
         if (res.empty() || res[0][0].is_null()) return -1;
         return res[0][0].as<int64_t>();
@@ -228,7 +360,11 @@ bool UtxoHeightExported(int height)
         pqxx::connection c{ConnectPg()};
         pqxx::work w{c};
         EnsureUtxoStatsTables(w);
-        c.prepare("UtxoHeightExists", "SELECT 1 FROM utxo_age WHERE block_height = $1 LIMIT 1");
+        c.prepare("UtxoHeightExists", R"sql(
+            SELECT 1 FROM utxo_age WHERE block_height = $1
+            INTERSECT
+            SELECT 1 FROM address_balance_histogram WHERE block_height = $1
+        )sql");
         const auto res = enterprise::ExecPrepared(w, "UtxoHeightExists", height);
         w.commit();
         return !res.empty();
@@ -243,7 +379,7 @@ void LoadExportedUtxoHeights(std::unordered_set<int>& heights, int64_t& max_heig
     pqxx::connection c{ConnectPg()};
     pqxx::work w{c};
     EnsureUtxoStatsTables(w);
-    const auto res = w.exec("SELECT DISTINCT block_height FROM utxo_age");
+    const auto res = w.exec(EXPORTED_HEIGHTS_SQL);
     w.commit();
     heights.clear();
     max_height = -1;
@@ -266,6 +402,7 @@ UtxoAgeHistogram ScanUtxoAgeFromCursor(
     histogram.stats.median_time = FormatMedianTimeUtc(block_index.GetMedianTimePast());
 
     std::map<unsigned int, AgeBucket> age_map;
+    ScriptBalanceMap script_balances;
     CAmount total_value{0};
     uint64_t total_count{0};
     int64_t total_size{0};
@@ -299,6 +436,8 @@ UtxoAgeHistogram ScanUtxoAgeFromCursor(
         std::get<1>(age_tuple) += 1;
         std::get<2>(age_tuple) += utxo_size;
 
+        script_balances.Add(ScriptBalanceMap::Key(coin.out.scriptPubKey), coin_value);
+
         ++scanned;
         if (scanned % 5000000 == 0) {
             LogInfo("utxostats: scanned %u coins at height %d", scanned, histogram.stats.height);
@@ -314,9 +453,13 @@ UtxoAgeHistogram ScanUtxoAgeFromCursor(
         histogram.rows.push_back({weeks_old, std::get<0>(bucket), std::get<1>(bucket), std::get<2>(bucket)});
     }
     histogram.stats.age_buckets = histogram.rows.size();
+    histogram.address_bins = BuildAddressBalanceHistogram(script_balances);
+    histogram.stats.funded_scripts = script_balances.size();
+    histogram.stats.address_bins = histogram.address_bins.size();
 
     const auto elapsed{Ticks<std::chrono::milliseconds>(NodeClock::now() - started) / 1000.0};
-    LogInfo("utxostats: scanned %u coins at height %d in %.1f s", total_count, histogram.stats.height, elapsed);
+    LogInfo("utxostats: scanned %u coins (%u funded scripts) at height %d in %.1f s",
+        total_count, histogram.stats.funded_scripts, histogram.stats.height, elapsed);
     return histogram;
 }
 
@@ -346,8 +489,10 @@ void WriteUtxoAgeHistogram(const UtxoAgeHistogram& histogram)
             PercentRounded(static_cast<double>(row.utxo_value), static_cast<double>(stats.total_value)),
             PercentRounded(static_cast<double>(row.utxo_size), static_cast<double>(stats.total_size)));
     }
+    InsertAddressBalanceHistogram(c, w, stats, histogram.address_bins);
     w.commit();
-    LogInfo("utxostats: wrote %u age buckets for height %d", stats.age_buckets, stats.height);
+    LogInfo("utxostats: wrote %u age buckets and %u address bins for height %d",
+        stats.age_buckets, stats.address_bins, stats.height);
 }
 
 UtxoSetExportStats ExportUtxoSetFromCursor(
@@ -377,6 +522,7 @@ UtxoSetExportStats ExportUtxoSetFromCursor(
     std::map<std::array<CAmount, 2>, BalanceBucket> balance_map;
     std::map<std::array<int64_t, 2>, UsdBalanceBucket> usd_balance_map;
     std::map<std::string, AgeBucket> script_type_map;
+    ScriptBalanceMap script_balances;
 
     CAmount total_value{0};
     uint64_t total_count{0};
@@ -425,6 +571,8 @@ UtxoSetExportStats ExportUtxoSetFromCursor(
         std::get<1>(age_tuple) += 1;
         std::get<2>(age_tuple) += utxo_size;
 
+        script_balances.Add(ScriptBalanceMap::Key(coin.out.scriptPubKey), coin_value);
+
         if (include_optional_tables) {
             const auto bounds{ValueMagnitudeBounds(coin_value)};
             auto& balance_tuple = balance_map[{bounds.first, bounds.second}];
@@ -461,9 +609,13 @@ UtxoSetExportStats ExportUtxoSetFromCursor(
     stats.total_value = total_value;
     stats.total_size = total_size;
     stats.age_buckets = age_map.size();
+    const std::vector<AddressBalanceBin> address_bins{BuildAddressBalanceHistogram(script_balances)};
+    stats.funded_scripts = script_balances.size();
+    stats.address_bins = address_bins.size();
 
     const auto elapsed{Ticks<std::chrono::milliseconds>(NodeClock::now() - started) / 1000.0};
-    LogInfo("utxostats: scanned %u coins at height %d in %.1f s", total_count, stats.height, elapsed);
+    LogInfo("utxostats: scanned %u coins (%u funded scripts) at height %d in %.1f s",
+        total_count, stats.funded_scripts, stats.height, elapsed);
 
     pqxx::work w{c};
     EnsureUtxoStatsTables(w);
@@ -488,6 +640,8 @@ UtxoSetExportStats ExportUtxoSetFromCursor(
             PercentRounded(static_cast<double>(std::get<0>(bucket)), static_cast<double>(total_value)),
             PercentRounded(static_cast<double>(std::get<2>(bucket)), static_cast<double>(total_size)));
     }
+
+    InsertAddressBalanceHistogram(c, w, stats, address_bins);
 
     if (include_optional_tables) {
         stats.wrote_optional = true;
@@ -561,7 +715,8 @@ UtxoSetExportStats ExportUtxoSetFromCursor(
     }
 
     w.commit();
-    LogInfo("utxostats: wrote %u age buckets for height %d", stats.age_buckets, stats.height);
+    LogInfo("utxostats: wrote %u age buckets and %u address bins for height %d",
+        stats.age_buckets, stats.address_bins, stats.height);
     return stats;
 }
 

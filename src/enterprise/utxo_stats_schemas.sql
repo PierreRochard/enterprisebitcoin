@@ -75,3 +75,16 @@ CREATE TABLE utxo_script_types (
 );
 
 CREATE UNIQUE INDEX utxo_types_block_height_type_idx ON utxo_script_types (block_height, script_type);
+
+-- Funded scripts (addresses) by balance at each snapshot height: 100
+-- log-spaced satoshi bins per power of ten, empty bins omitted.
+CREATE TABLE address_balance_histogram (
+    block_height BIGINT NOT NULL,
+    block_hash TEXT NOT NULL,
+    median_time TIMESTAMP NOT NULL,
+    lower_bound BIGINT NOT NULL,
+    upper_bound BIGINT NOT NULL,
+    address_count BIGINT NOT NULL,
+    balance BIGINT NOT NULL,
+    PRIMARY KEY (block_height, lower_bound)
+);

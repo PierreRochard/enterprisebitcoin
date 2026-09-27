@@ -11,6 +11,18 @@ UTXO age histograms
 block-delta export. The Traders versus HODLers, Median Hodl, and UTXO Age
 Heatmap charts read that table.
 
+The same scan also sums every coin's value by scriptPubKey and writes
+`public.address_balance_histogram`: the number of funded scripts (addresses)
+and their total balance in 100 log-spaced satoshi bins per power of ten.
+Scripts are keyed by a 64-bit SipHash with fixed keys (about 16 bytes per
+funded script in RAM, a few GB at mainnet scale); a collision among tens of
+millions of scripts is roughly a one-in-ten-thousand event and would merge two
+balances. Every power of ten is a bin edge, so brackets such as 0.01 BTC or
+10 BTC are exact sums of bins. The web app's `address_balance_buckets` views
+read this table. Both tables are written in one transaction, and a height
+counts as exported only when both have it, so a gap-fill IBD rescans heights
+that predate the histogram.
+
 `-utxostats` defaults to the value of `-enterpriseindex`. When enabled, a
 background thread owns every PostgreSQL connection for UTXO stats:
 
