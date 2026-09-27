@@ -132,6 +132,12 @@ BOOST_AUTO_TEST_CASE(script_balance_map_sums_per_script_across_growth)
         total += bins[i].balance;
     }
     BOOST_CHECK_EQUAL(addresses, 10'002U);
+    BOOST_CHECK_EQUAL(enterprise::CountAddresses(bins), 10'002U);
+
+    // A script holding only zero-value outputs is tracked but is not an address with a balance.
+    balances.Add(enterprise::ScriptBalanceMap::Key(CScript() << OP_3), 0);
+    BOOST_CHECK_EQUAL(balances.size(), 10'003U);
+    BOOST_CHECK_EQUAL(enterprise::CountAddresses(enterprise::BuildAddressBalanceHistogram(balances)), 10'002U);
     BOOST_CHECK_EQUAL(total, 8 * COIN + 2'000'000 + 10'000 * 1'000);
 
     const auto holding{[&](CAmount balance) {

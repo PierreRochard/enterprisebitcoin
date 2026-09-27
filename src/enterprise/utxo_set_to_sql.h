@@ -26,7 +26,7 @@ struct UtxoSetExportStats {
     CAmount total_value{0};
     int64_t total_size{0};
     size_t age_buckets{0};
-    uint64_t funded_scripts{0};
+    uint64_t funded_scripts{0}; //!< scripts with a positive balance
     size_t address_bins{0};
     bool skipped{false};
     std::string skip_reason;
@@ -100,6 +100,10 @@ size_t AddressBalanceBinIndex(CAmount balance);
 
 //! Collapse per-script balances into the non-empty histogram bins, ascending.
 std::vector<AddressBalanceBin> BuildAddressBalanceHistogram(const ScriptBalanceMap& balances);
+
+//! Funded scripts (positive balance) across the bins. Scripts holding only
+//! zero-value outputs are in the map but not in any bin.
+uint64_t CountAddresses(const std::vector<AddressBalanceBin>& bins);
 
 //! Age in whole weeks, matching the original exporter: round((tip-coin)/1008).
 unsigned int CoinAgeWeeks(int snapshot_height, int coin_height);

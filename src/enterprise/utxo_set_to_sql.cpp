@@ -326,6 +326,13 @@ std::vector<AddressBalanceBin> BuildAddressBalanceHistogram(const ScriptBalanceM
     return bins;
 }
 
+uint64_t CountAddresses(const std::vector<AddressBalanceBin>& bins)
+{
+    uint64_t count{0};
+    for (const auto& bin : bins) count += bin.address_count;
+    return count;
+}
+
 bool ShouldExportUtxoSet(int height, int64_t db_max_height, bool height_already_exported, bool force)
 {
     if (height <= 0) return false;
@@ -454,7 +461,7 @@ UtxoAgeHistogram ScanUtxoAgeFromCursor(
     }
     histogram.stats.age_buckets = histogram.rows.size();
     histogram.address_bins = BuildAddressBalanceHistogram(script_balances);
-    histogram.stats.funded_scripts = script_balances.size();
+    histogram.stats.funded_scripts = CountAddresses(histogram.address_bins);
     histogram.stats.address_bins = histogram.address_bins.size();
 
     const auto elapsed{Ticks<std::chrono::milliseconds>(NodeClock::now() - started) / 1000.0};
@@ -610,7 +617,7 @@ UtxoSetExportStats ExportUtxoSetFromCursor(
     stats.total_size = total_size;
     stats.age_buckets = age_map.size();
     const std::vector<AddressBalanceBin> address_bins{BuildAddressBalanceHistogram(script_balances)};
-    stats.funded_scripts = script_balances.size();
+    stats.funded_scripts = CountAddresses(address_bins);
     stats.address_bins = address_bins.size();
 
     const auto elapsed{Ticks<std::chrono::milliseconds>(NodeClock::now() - started) / 1000.0};
