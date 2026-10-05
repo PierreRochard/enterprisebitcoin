@@ -634,6 +634,9 @@ void ValidateEnterpriseSchema()
         {"likely_change_outputs_count", "bigint"},
         {"likely_change_value_sats", "bigint"},
         {"denomination_classifier_version", "text"},
+        {"coin_days_destroyed", "double precision"},
+        {"spent_age_bands", "jsonb"},
+        {"oldest_spent_height", "bigint"},
     };
     RequireInsertColumns(w, "blocks", block_insert_columns);
     RejectBlockingExtraColumns(w, "blocks", ColumnNames(block_insert_columns));
@@ -1094,6 +1097,42 @@ std::vector<BlockRowKey> FindPriceFinalizationCandidates(
         if (!hash) {
             throw std::runtime_error(strprintf(
                 "public.blocks contains an invalid hash at price-finalization height %d",
+                row[0].as<int>()));
+        }
+        candidates.push_back(BlockRowKey{row[0].as<int>(), *hash});
+    }
+    return candidates;
+}
+
+std::vector<BlockRowKey> FindSpentAgeBackfillCandidates(
+    PgSession& session,
+    pqxx::work& work,
+    int min_height,
+    int max_height)
+{
+    std::vector<BlockRowKey> candidates;
+    if (min_height > max_height) return candidates;
+
+    session.Prepare("EnterpriseSpentAgeBackfillCandidates", R"sql(
+        SELECT height, hash
+        FROM blocks
+        WHERE network = $1
+          AND height BETWEEN $2 AND $3
+          AND coin_days_destroyed IS NULL
+        ORDER BY height DESC
+    )sql");
+    const pqxx::result result{enterprise::ExecPrepared(
+        work,
+        "EnterpriseSpentAgeBackfillCandidates",
+        Network(),
+        min_height,
+        max_height)};
+    candidates.reserve(result.size());
+    for (const pqxx::row& row : result) {
+        const auto hash{uint256::FromHex(row[1].as<std::string>())};
+        if (!hash) {
+            throw std::runtime_error(strprintf(
+                "public.blocks contains an invalid hash at spent-age backfill height %d",
                 row[0].as<int>()));
         }
         candidates.push_back(BlockRowKey{row[0].as<int>(), *hash});

@@ -113,7 +113,11 @@ CREATE TABLE blocks
     likely_change_outputs_count                     BIGINT,
     likely_change_value_sats                        BIGINT,
 
-    denomination_classifier_version                 TEXT
+    denomination_classifier_version                 TEXT,
+
+    coin_days_destroyed                             DOUBLE PRECISION,
+    spent_age_bands                                 JSONB,
+    oldest_spent_height                             BIGINT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS blocks_network_height_idx ON blocks(network, height);
@@ -163,6 +167,13 @@ INSERT INTO enterprise_schema_migrations (version, description)
 VALUES (
     '20260711_pg17_reuse_v1',
     'Additive PostgreSQL 17 reuse schema for enterprise denomination backfill'
+)
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO enterprise_schema_migrations (version, description)
+VALUES (
+    '20261005_spent_coin_age',
+    'Spent-coin age columns on blocks'
 )
 ON CONFLICT (version) DO NOTHING;
 

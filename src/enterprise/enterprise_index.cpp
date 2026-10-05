@@ -75,7 +75,8 @@ EnterpriseIndex::EnterpriseIndex(std::unique_ptr<interfaces::Chain> chain, size_
           !f_wipe &&
           gArgs.GetBoolArg(
               "-enterprisebootstrapfrompostgres",
-              DEFAULT_ENTERPRISE_BOOTSTRAP_FROM_POSTGRES)}
+              DEFAULT_ENTERPRISE_BOOTSTRAP_FROM_POSTGRES)},
+      m_spent_age_backfill{gArgs.GetBoolArg("-enterprisespentagebackfill", DEFAULT_ENTERPRISE_SPENT_AGE_BACKFILL)}
 {
     if (f_wipe) {
         const std::vector<fs::path> stale_spool{m_spool.Pending()};
@@ -178,10 +179,10 @@ bool EnterpriseIndex::CustomInit(const std::optional<interfaces::BlockRef>&)
         enterprise::ValidateEnterpriseSchema();
     } catch (const std::exception& e) {
         LogError("enterprise: PostgreSQL schema validation failed: %s", e.what());
-        LogError("enterprise: apply and verify migration 20260711_pg17_reuse_v1 before restarting");
+        LogError("enterprise: apply and verify migrations 20260711_pg17_reuse_v1 and 20261005_spent_coin_age before restarting");
         return false;
     }
-    LogInfo("enterprise: PostgreSQL 17 schema migration 20260711_pg17_reuse_v1 validated");
+    LogInfo("enterprise: PostgreSQL schema migrations 20260711_pg17_reuse_v1 and 20261005_spent_coin_age validated");
     StartWriter();
     return true;
 }
@@ -375,6 +376,9 @@ bool EnterpriseIndex::DrainOnce(enterprise::PgSession& session)
         return true;
     }
     if (all_drained && FinalizeAvailablePrices(session)) {
+        return true;
+    }
+    if (all_drained && BackfillSpentAge(session)) {
         return true;
     }
     return all_drained;
@@ -766,6 +770,104 @@ bool EnterpriseIndex::FinalizeAvailablePrices(enterprise::PgSession& session)
             finalized);
     }
     return finalized > 0;
+}
+
+bool EnterpriseIndex::BackfillSpentAge(enterprise::PgSession& session)
+{
+    if (!m_spent_age_backfill || m_spent_age_backfill_height == -1) return false;
+    const auto now{NodeClock::now()};
+    if (now < m_next_spent_age_backfill) return false;
+    // New blocks come first: they already carry their spent-age columns.
+    if (!m_spool.Pending().empty()) return false;
+    if (!GetSummary().synced || m_chainstate->m_chainman.IsInitialBlockDownload()) return false;
+
+    uint64_t backfill_generation;
+    {
+        std::lock_guard<std::mutex> lock{m_writer_mutex};
+        if (m_writer_stop) return false;
+        backfill_generation = m_writer_wakeup_generation;
+    }
+
+    const int chain_tip_height{WITH_LOCK(::cs_main, return m_chainstate->m_chain.Height())};
+    if (chain_tip_height < 0) return false;
+    if (!m_spent_age_backfill_height) {
+        m_spent_age_backfill_height = chain_tip_height;
+        LogInfo("enterprise: spent-coin age backfill checking block rows from height %d down", chain_tip_height);
+    }
+    const int max_height{std::min(*m_spent_age_backfill_height, chain_tip_height)};
+    const int min_height{std::max(0, max_height - ENTERPRISE_SPENT_AGE_BACKFILL_RANGE + 1)};
+
+    std::size_t filled{0};
+    try {
+        std::vector<enterprise::BlockRowKey> candidates;
+        {
+            pqxx::work work{session.Connection()};
+            candidates = enterprise::FindSpentAgeBackfillCandidates(session, work, min_height, max_height);
+            work.commit();
+        }
+
+        for (const enterprise::BlockRowKey& candidate : candidates) {
+            {
+                // Yield to a new spool event; rows already filled drop out of
+                // the next query over this range.
+                std::lock_guard<std::mutex> lock{m_writer_mutex};
+                if (m_writer_stop || m_writer_wakeup_generation != backfill_generation) {
+                    m_spent_age_backfill_filled += filled;
+                    return true;
+                }
+            }
+
+            const CBlockIndex* pindex{nullptr};
+            bool have_data{false};
+            {
+                LOCK(::cs_main);
+                pindex = m_chainstate->m_chain[candidate.height];
+                have_data = pindex &&
+                            (pindex->nStatus & BLOCK_HAVE_DATA) &&
+                            (pindex->nHeight == 0 || (pindex->nStatus & BLOCK_HAVE_UNDO));
+            }
+            // A row for a block no longer in the active chain is replaced by
+            // the normal connect path, which writes these columns itself.
+            if (!pindex || pindex->GetBlockHash() != candidate.hash) continue;
+
+            CBlock block;
+            CBlockUndo undo;
+            if (!have_data ||
+                !m_chainstate->m_blockman.ReadBlock(block, *pindex) ||
+                (pindex->nHeight > 0 && !m_chainstate->m_blockman.ReadBlockUndo(undo, *pindex))) {
+                if (m_spent_age_backfill_unavailable++ == 0) {
+                    LogWarning("enterprise: spent-coin age backfill cannot read block or undo data at height %d; "
+                               "rows for pruned blocks keep NULL spent-age columns", candidate.height);
+                }
+                continue;
+            }
+
+            pqxx::work work{session.Connection()};
+            if (BackfillBlockSpentAge(session, work, *pindex, block, undo)) ++filled;
+            work.commit();
+        }
+    } catch (const std::exception& e) {
+        session.Reset();
+        m_spent_age_backfill_filled += filled;
+        m_next_spent_age_backfill = now + 60s;
+        LogError("enterprise: spent-coin age backfill failed in heights %d-%d; retrying in a minute: %s",
+                 min_height, max_height, e.what());
+        return false;
+    }
+
+    m_spent_age_backfill_filled += filled;
+    if (filled > 0) {
+        LogInfo("enterprise: filled spent-coin age for %u block rows in heights %d-%d", filled, min_height, max_height);
+    }
+    m_spent_age_backfill_height = min_height - 1;
+    if (min_height == 0) {
+        LogInfo("enterprise: spent-coin age backfill reached genesis: %u rows filled, %u unreadable",
+                m_spent_age_backfill_filled, m_spent_age_backfill_unavailable);
+        return filled > 0;
+    }
+    // Keep walking down without the writer loop's idle wait.
+    NotifyWriter();
+    return true;
 }
 
 bool EnterpriseIndex::QueueLocalBackfill(const CBlockIndex& block_index)

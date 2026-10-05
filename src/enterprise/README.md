@@ -4,6 +4,37 @@ Enterprise SQL Export
 This build can export block, mempool, and periodic UTXO statistics to
 PostgreSQL when `WITH_ENTERPRISE_SQL` is enabled.
 
+Spent-coin age
+==
+
+Every block row records how old the coins it spends are, read from the undo
+data that already travels with each block delta, so the figures land with the
+block itself:
+
+- `input_data` entries gain a seventh element, the height that created the
+  spent coin: `[weight, size, spent_size, spent_value, spent_script_type,
+  ord_flag, created_height]`. Rows written before this change keep six.
+- `coin_days_destroyed`: value (BTC) times age (days), summed over the spent
+  coins. Age is the spending block's median time past minus that of the block
+  that created the coin, so it is never negative; a coin created and spent in
+  the same block is zero days old.
+- `spent_age_bands`: `[[min_days, inputs, value_sats], ...]` for the non-empty
+  bands starting at 0, 1, 7, 30, 90, 155, 180, 365, 730, 1095, 1825, 2555,
+  3650 and 5475 days (a year is 365 days; 155 days splits short- from
+  long-term holders). Band values sum to `total_input_value`.
+- `oldest_spent_height`: the creation height of the oldest coin spent, NULL
+  when the block spends nothing.
+
+Apply `migrations/20261005_spent_coin_age.sql` as the owner of `public.blocks`
+before starting a node built with these columns; a node built earlier keeps
+running against the migrated table and leaves the columns NULL. With
+`-enterprisespentagebackfill` (on by default) the writer fills NULL rows once
+it is idle, walking down from the tip 1008 heights at a time and reading each
+block and its undo data from local storage. It yields to every new spool event,
+restarts from the tip after a restart (filled ranges are skipped by one indexed
+query each), and leaves rows for pruned blocks NULL. Only the three block-level
+columns are backfilled; historical `input_data` is not rewritten.
+
 UTXO age histograms
 ==
 

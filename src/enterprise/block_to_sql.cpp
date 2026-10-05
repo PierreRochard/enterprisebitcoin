@@ -13,6 +13,7 @@
 #include <enterprise/pg.h>
 #include <enterprise/pg_config.h>
 #include <enterprise/pqxx_compat.h>
+#include <enterprise/spent_age.h>
 #include <enterprise/utilities.h>
 #include <index/txindex.h>
 #include <key_io.h>
@@ -24,6 +25,7 @@
 #include <script/interpreter.h>
 #include <script/solver.h>
 #include <serialize.h>
+#include <tinyformat.h>
 #include <txmempool.h>
 #include <undo.h>
 #include <util/chaintype.h>
@@ -515,7 +517,94 @@ bool HandleBoundedHistoricalBlock(
     return true;
 }
 
+//! Ages of the coins a block spends: the spending block's median time past
+//! minus that of the block each coin was created in, so ages never go
+//! negative. Creation times are looked up once per height.
+class SpentCoinAges
+{
+private:
+    const CBlockIndex& m_block_index;
+    const int64_t m_median_time;
+    std::map<int, int64_t> m_creation_median_times;
+
+public:
+    explicit SpentCoinAges(const CBlockIndex& block_index)
+        : m_block_index{block_index}, m_median_time{block_index.GetMedianTimePast()} {}
+
+    int64_t Seconds(int created_height)
+    {
+        const auto [it, inserted]{m_creation_median_times.try_emplace(created_height, 0)};
+        if (inserted) {
+            const CBlockIndex* created{m_block_index.GetAncestor(created_height)};
+            if (!created) {
+                throw std::runtime_error(strprintf(
+                    "block %d spends a coin from height %d, which is not one of its ancestors",
+                    m_block_index.nHeight,
+                    created_height));
+            }
+            it->second = created->GetMedianTimePast();
+        }
+        return std::max<int64_t>(0, m_median_time - it->second);
+    }
+};
+
+enterprise::SpentAgeStats CalculateSpentAgeStats(
+    const CBlockIndex& block_index,
+    const CBlock& block,
+    const CBlockUndo& undo)
+{
+    if (block.vtx.size() > 1 && undo.vtxundo.size() != block.vtx.size() - 1) {
+        throw std::runtime_error("block undo transaction count mismatch");
+    }
+
+    SpentCoinAges ages{block_index};
+    enterprise::SpentAgeStats stats;
+    for (const CTxUndo& tx_undo : undo.vtxundo) {
+        for (const Coin& coin : tx_undo.vprevout) {
+            const int created_height{static_cast<int>(coin.nHeight)};
+            stats.Add(coin.out.nValue, created_height, ages.Seconds(created_height));
+        }
+    }
+    return stats;
+}
+
+std::string OptionalHeightParam(const std::optional<int>& height)
+{
+    return height ? std::to_string(*height) : "";
+}
+
 } // namespace
+
+bool BackfillBlockSpentAge(
+    enterprise::PgSession& session,
+    pqxx::work& work,
+    const CBlockIndex& block_index,
+    const CBlock& block,
+    const CBlockUndo& undo)
+{
+    const enterprise::SpentAgeStats stats{CalculateSpentAgeStats(block_index, block, undo)};
+    session.Prepare("EnterpriseBackfillBlockSpentAge", R"sql(
+        UPDATE blocks SET
+            coin_days_destroyed = $1,
+            spent_age_bands = $2,
+            oldest_spent_height = NULLIF($3::text, '')::bigint
+        WHERE network = $4
+          AND height = $5
+          AND hash = $6
+          AND coin_days_destroyed IS NULL
+        RETURNING 1
+    )sql");
+    const auto updated{enterprise::ExecPrepared(
+        work,
+        "EnterpriseBackfillBlockSpentAge",
+        stats.CoinDaysDestroyed(),
+        stats.BandsJson(),
+        OptionalHeightParam(stats.OldestSpentHeight()),
+        ChainToString(),
+        block_index.nHeight,
+        block.GetHash().GetHex())};
+    return updated.size() == 1;
+}
 
 PriceFinalizationResult FinalizeBlockDenominationPrice(
     enterprise::PgSession& session,
@@ -696,6 +785,9 @@ BlockToSql::BlockToSql(
 
     DenominationBlockStats denomination_stats;
 
+    SpentCoinAges spent_coin_ages{*block_index};
+    enterprise::SpentAgeStats spent_age_stats;
+
     std::ostringstream output_data_string_stream;
     output_data_string_stream << "[";
 
@@ -865,6 +957,8 @@ BlockToSql::BlockToSql(
             const CTxIn &txin_data = transaction->vin[input_vector];
             const Coin &coin = view.AccessCoin(txin_data.prevout);
             CTxOut spent_output_data = coin.out;
+            // A coin missing from the view was created earlier in this block.
+            const int created_height{coin.IsSpent() ? block_index->nHeight : static_cast<int>(coin.nHeight)};
             if (coin.IsSpent()) {
                 CTransactionRef spent_output_transaction;
                 for (std::size_t transaction_index = 0; transaction_index < block.vtx.size(); ++transaction_index) {
@@ -901,6 +995,7 @@ BlockToSql::BlockToSql(
             transaction_data.total_input_value += spent_output_data.nValue;
             transaction_data.utxo_size_inc -= spent_utxo_size;
             block_net_utxo_size_impact -= spent_utxo_size;
+            spent_age_stats.Add(spent_output_data.nValue, created_height, spent_coin_ages.Seconds(created_height));
 
             std::vector <std::vector<unsigned char>> solutions_data;
             TxoutType which_type = Solver(spent_output_data.scriptPubKey, solutions_data);
@@ -981,7 +1076,8 @@ BlockToSql::BlockToSql(
             input_data_string_stream << spent_output_size << ",";
             input_data_string_stream << spent_output_data.nValue << ",";
             input_data_string_stream << spent_script_type << ",";
-            input_data_string_stream << input_found_ord_prefix;
+            input_data_string_stream << input_found_ord_prefix << ",";
+            input_data_string_stream << created_height;
 
             input_data_string_stream << "]";
             if (transaction_index != block.vtx.size() - 1 || input_vector != transaction->vin.size() - 1) {
@@ -1223,7 +1319,11 @@ BlockToSql::BlockToSql(
                                              "likely_change_outputs_count, "
                                              "likely_change_value_sats, "
 
-                                             "denomination_classifier_version"
+                                             "denomination_classifier_version, "
+
+                                             "coin_days_destroyed, "
+                                             "spent_age_bands, "
+                                             "oldest_spent_height"
 
                                              ") "
 
@@ -1336,7 +1436,11 @@ BlockToSql::BlockToSql(
                                              "$84, " // likely_change_outputs_count
                                              "$85, " // likely_change_value_sats
 
-                                             "$86 " // denomination_classifier_version
+                                             "$86, " // denomination_classifier_version
+
+                                             "$87, "                          // coin_days_destroyed
+                                             "$88, "                          // spent_age_bands
+                                             "NULLIF($89::text, '')::bigint " // oldest_spent_height
 
                                              ") ON CONFLICT DO NOTHING RETURNING 1;");
     auto r3{enterprise::ExecPrepared(
@@ -1448,7 +1552,11 @@ BlockToSql::BlockToSql(
         denomination_stats.likely_change_outputs_count,
         denomination_stats.likely_change_value_sats,
 
-        enterprise::DENOMINATION_CLASSIFIER_VERSION
+        enterprise::DENOMINATION_CLASSIFIER_VERSION,
+
+        spent_age_stats.CoinDaysDestroyed(),
+        spent_age_stats.BandsJson(),
+        OptionalHeightParam(spent_age_stats.OldestSpentHeight())
 
         )};
     if (r3.size() != 1) {

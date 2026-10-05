@@ -45,6 +45,8 @@ from verify_enterprise_blocks import (  # noqa: E402
 MIGRATION_VERSION = "20260711_pg17_reuse_v1"
 MIGRATION = REPO_ROOT / "src" / "enterprise" / "migrations" / f"{MIGRATION_VERSION}.sql"
 MIGRATION_VERIFY = REPO_ROOT / "src" / "enterprise" / "migrations" / f"verify_{MIGRATION_VERSION}.sql"
+SPENT_AGE_MIGRATION_VERSION = "20261005_spent_coin_age"
+SPENT_AGE_MIGRATION = REPO_ROOT / "src" / "enterprise" / "migrations" / f"{SPENT_AGE_MIGRATION_VERSION}.sql"
 
 DENOMINATION_COLUMNS = [
     "btc_usd_price",
@@ -68,6 +70,12 @@ DENOMINATION_COLUMNS = [
     "denomination_classifier_version",
 ]
 
+SPENT_AGE_COLUMNS = [
+    "coin_days_destroyed",
+    "spent_age_bands",
+    "oldest_spent_height",
+]
+
 
 class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
     def set_test_params(self):
@@ -89,7 +97,7 @@ class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
         self.enterprise_config_path = Path(self.enterprise_config)
         if not self.enterprise_config_path.exists():
             raise SkipTest(f"enterprise test config does not exist: {self.enterprise_config_path}")
-        for required_sql in [MIGRATION, MIGRATION_VERIFY]:
+        for required_sql in [MIGRATION, MIGRATION_VERIFY, SPENT_AGE_MIGRATION]:
             if not required_sql.is_file():
                 raise SkipTest(f"enterprise migration fixture does not exist: {required_sql}")
 
@@ -167,6 +175,8 @@ class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
         self.run_sql_file(MIGRATION)
         self.run_sql_file(MIGRATION)
         self.run_sql_file(MIGRATION_VERIFY)
+        self.run_sql_file(SPENT_AGE_MIGRATION)
+        self.run_sql_file(SPENT_AGE_MIGRATION)
 
         # Both the node and verifier must treat the explicit config as
         # authoritative even when the parent process has hostile libpq
@@ -219,8 +229,12 @@ class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
         """)
         self.run_sql_file(REPO_ROOT / "src" / "enterprise" / "schema.sql")
 
-        drop_columns = ",\n".join(f"DROP COLUMN {column}" for column in DENOMINATION_COLUMNS)
+        drop_columns = ",\n".join(
+            f"DROP COLUMN {column}" for column in DENOMINATION_COLUMNS + SPENT_AGE_COLUMNS
+        )
         self.psql.query(f"""
+            DELETE FROM public.enterprise_schema_migrations
+            WHERE version = '{SPENT_AGE_MIGRATION_VERSION}';
             ALTER TABLE public.blocks
                 ADD COLUMN enterprise_test_sentinel TEXT,
                 {drop_columns};
@@ -477,8 +491,13 @@ class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
         assert_equal(self.sql_scalar("SELECT count(*) FROM prices"), "36526")
         self.assert_enterprise_column_exists("blocks", "enterprise_test_sentinel")
         assert_equal(self.sql_scalar("SELECT to_regclass('public.enterprise_test_blocks_view') IS NOT NULL"), "t")
-        for column in DENOMINATION_COLUMNS:
+        for column in DENOMINATION_COLUMNS + SPENT_AGE_COLUMNS:
             self.assert_enterprise_column_exists("blocks", column)
+        assert_equal(self.sql_scalar(f"""
+            SELECT count(*)
+            FROM enterprise_schema_migrations
+            WHERE version = '{SPENT_AGE_MIGRATION_VERSION}'
+        """), "1")
         for table in ["enterprise_block_ingest", "enterprise_block_gaps", "mempool_entries"]:
             assert_equal(self.sql_scalar(f"SELECT to_regclass('public.{table}') IS NOT NULL"), "t")
         assert_equal(self.sql_scalar("""
@@ -526,6 +545,29 @@ class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
 
         self.log.info("Wait for enterprise SQL writer to populate through the tip")
         self.wait_for_enterprise_height(tip_height)
+
+        self.log.info("Verify the spent coin's creation height and age columns")
+        spent_age_row = self.psql.query_rows(f"""
+            SELECT jsonb_array_length(input_data),
+                   (input_data -> 0 ->> 6)::bigint,
+                   oldest_spent_height,
+                   coin_days_destroyed >= 0,
+                   jsonb_array_length(spent_age_bands),
+                   (spent_age_bands -> 0 ->> 1)::bigint,
+                   (spent_age_bands -> 0 ->> 2)::bigint = total_input_value
+            FROM blocks
+            WHERE network = 'regtest'
+              AND height = {tip_height}
+        """)
+        assert_equal(len(spent_age_row), 1)
+        spent_age_row = spent_age_row[0]
+        assert_equal(int(spent_age_row[0]), 1)
+        assert_equal(spent_age_row[1], spent_age_row[2])
+        assert_greater_than(tip_height, int(spent_age_row[2]))
+        assert_equal(spent_age_row[3], "t")
+        assert_equal(int(spent_age_row[4]), 1)
+        assert_equal(int(spent_age_row[5]), 1)
+        assert_equal(spent_age_row[6], "t")
 
         self.log.info("Verify the materialized-view price compatibility fallback")
         denomination_row = self.psql.query_rows(f"""
@@ -1280,6 +1322,41 @@ class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
                 "best_block_height": outage_tip,
             },
         })
+
+        self.log.info("Clear the spent-age columns and verify the writer backfills them")
+        expected_spent_age = self.psql.query_rows("""
+            SELECT height, coin_days_destroyed, spent_age_bands::text, oldest_spent_height
+            FROM blocks
+            WHERE network = 'regtest'
+            ORDER BY height
+        """)
+        self.psql.query("""
+            UPDATE blocks
+            SET coin_days_destroyed = NULL, spent_age_bands = NULL, oldest_spent_height = NULL
+            WHERE network = 'regtest';
+        """)
+        self.restart_node(0, extra_args=outage_args)
+        self.wait_until(lambda: self.sql_scalar("""
+            SELECT count(*) FROM blocks
+            WHERE network = 'regtest' AND coin_days_destroyed IS NULL
+        """) == "0", timeout=120)
+        assert_equal(self.psql.query_rows("""
+            SELECT height, coin_days_destroyed, spent_age_bands::text, oldest_spent_height
+            FROM blocks
+            WHERE network = 'regtest'
+            ORDER BY height
+        """), expected_spent_age)
+        assert_equal(self.sql_scalar("""
+            SELECT count(*)
+            FROM blocks
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(sum((band ->> 1)::bigint), 0) AS inputs,
+                       COALESCE(sum((band ->> 2)::bigint), 0) AS value_sats
+                FROM jsonb_array_elements(spent_age_bands) AS band
+            ) AS bands ON true
+            WHERE network = 'regtest'
+              AND (bands.inputs <> inputs_count - 1 OR bands.value_sats <> total_input_value)
+        """), "0")
 
 
 if __name__ == "__main__":

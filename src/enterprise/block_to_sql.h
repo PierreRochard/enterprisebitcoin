@@ -74,5 +74,14 @@ void DeleteBlockFromSql(enterprise::PgSession& session, pqxx::work& work, const 
     pqxx::work& work,
     const CBlockIndex& block_index,
     const CBlock& block);
+//! Fill coin_days_destroyed, spent_age_bands and oldest_spent_height on a row
+//! written before those columns existed. Returns false when the row is absent,
+//! holds another block, or already has them.
+[[nodiscard]] bool BackfillBlockSpentAge(
+    enterprise::PgSession& session,
+    pqxx::work& work,
+    const CBlockIndex& block_index,
+    const CBlock& block,
+    const CBlockUndo& undo);
 
 #endif //BLOCK_TO_SQL_H
