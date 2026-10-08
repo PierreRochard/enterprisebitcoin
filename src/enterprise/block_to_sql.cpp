@@ -13,6 +13,7 @@
 #include <enterprise/pg.h>
 #include <enterprise/pg_config.h>
 #include <enterprise/pqxx_compat.h>
+#include <enterprise/change_flows.h>
 #include <enterprise/spent_age.h>
 #include <enterprise/utilities.h>
 #include <index/txindex.h>
@@ -568,6 +569,31 @@ enterprise::SpentAgeStats CalculateSpentAgeStats(
     return stats;
 }
 
+enterprise::ChangeFlowStats CalculateChangeFlowStats(
+    const CBlockIndex& block_index,
+    const CBlock& block,
+    const CBlockUndo& undo)
+{
+    if (block.vtx.size() > 1 && undo.vtxundo.size() != block.vtx.size() - 1) {
+        throw std::runtime_error("block undo transaction count mismatch");
+    }
+
+    enterprise::ChangeFlowStats stats;
+    for (std::size_t i = 1; i < block.vtx.size(); ++i) {
+        const CTxUndo& tx_undo{undo.vtxundo[i - 1]};
+        if (tx_undo.vprevout.size() != block.vtx[i]->vin.size()) {
+            throw std::runtime_error("block undo input count mismatch");
+        }
+        std::vector<enterprise::SpentCoin> spent;
+        spent.reserve(tx_undo.vprevout.size());
+        for (const Coin& coin : tx_undo.vprevout) {
+            spent.push_back({coin.out, static_cast<int>(coin.nHeight)});
+        }
+        stats.AddTransaction(*block.vtx[i], spent, block_index.nHeight);
+    }
+    return stats;
+}
+
 std::string OptionalHeightParam(const std::optional<int>& height)
 {
     return height ? std::to_string(*height) : "";
@@ -575,31 +601,45 @@ std::string OptionalHeightParam(const std::optional<int>& height)
 
 } // namespace
 
-bool BackfillBlockSpentAge(
+bool BackfillBlockColumns(
     enterprise::PgSession& session,
     pqxx::work& work,
     const CBlockIndex& block_index,
     const CBlock& block,
     const CBlockUndo& undo)
 {
-    const enterprise::SpentAgeStats stats{CalculateSpentAgeStats(block_index, block, undo)};
-    session.Prepare("EnterpriseBackfillBlockSpentAge", R"sql(
+    const enterprise::SpentAgeStats age{CalculateSpentAgeStats(block_index, block, undo)};
+    const enterprise::ChangeFlowStats flows{CalculateChangeFlowStats(block_index, block, undo)};
+    // Each column group is filled only where it is still NULL, so a row that
+    // already has one keeps it. oldest_spent_height is NULL for a block that
+    // spends nothing, so it follows coin_days_destroyed.
+    session.Prepare("EnterpriseBackfillBlockColumns", R"sql(
         UPDATE blocks SET
-            coin_days_destroyed = $1,
-            spent_age_bands = $2,
-            oldest_spent_height = NULLIF($3::text, '')::bigint
-        WHERE network = $4
-          AND height = $5
-          AND hash = $6
-          AND coin_days_destroyed IS NULL
+            oldest_spent_height = CASE WHEN coin_days_destroyed IS NULL
+                                       THEN NULLIF($3::text, '')::bigint
+                                       ELSE oldest_spent_height END,
+            coin_days_destroyed = COALESCE(coin_days_destroyed, $1),
+            spent_age_bands = COALESCE(spent_age_bands, $2),
+            self_change_outputs_count = COALESCE(self_change_outputs_count, $4),
+            self_change_value_sats = COALESCE(self_change_value_sats, $5),
+            forward_outputs_count = COALESCE(forward_outputs_count, $6),
+            forward_value_sats = COALESCE(forward_value_sats, $7)
+        WHERE network = $8
+          AND height = $9
+          AND hash = $10
+          AND (coin_days_destroyed IS NULL OR self_change_value_sats IS NULL)
         RETURNING 1
     )sql");
     const auto updated{enterprise::ExecPrepared(
         work,
-        "EnterpriseBackfillBlockSpentAge",
-        stats.CoinDaysDestroyed(),
-        stats.BandsJson(),
-        OptionalHeightParam(stats.OldestSpentHeight()),
+        "EnterpriseBackfillBlockColumns",
+        age.CoinDaysDestroyed(),
+        age.BandsJson(),
+        OptionalHeightParam(age.OldestSpentHeight()),
+        flows.SelfChangeOutputs(),
+        flows.SelfChangeValue(),
+        flows.ForwardOutputs(),
+        flows.ForwardValue(),
         ChainToString(),
         block_index.nHeight,
         block.GetHash().GetHex())};
@@ -787,6 +827,7 @@ BlockToSql::BlockToSql(
 
     SpentCoinAges spent_coin_ages{*block_index};
     enterprise::SpentAgeStats spent_age_stats;
+    enterprise::ChangeFlowStats change_flow_stats;
 
     std::ostringstream output_data_string_stream;
     output_data_string_stream << "[";
@@ -827,6 +868,8 @@ BlockToSql::BlockToSql(
         bool transaction_found_ordinal_prefix = false;
         bool transaction_has_confident_denomination = false;
         std::vector<CAmount> transaction_unknown_denomination_values;
+        std::vector<enterprise::SpentCoin> spent_coins;
+        spent_coins.reserve(transaction->vin.size());
 
         // Outputs
         for (std::size_t output_vector = 0; output_vector < transaction->vout.size(); ++output_vector) {
@@ -996,6 +1039,7 @@ BlockToSql::BlockToSql(
             transaction_data.utxo_size_inc -= spent_utxo_size;
             block_net_utxo_size_impact -= spent_utxo_size;
             spent_age_stats.Add(spent_output_data.nValue, created_height, spent_coin_ages.Seconds(created_height));
+            spent_coins.push_back({spent_output_data, created_height});
 
             std::vector <std::vector<unsigned char>> solutions_data;
             TxoutType which_type = Solver(spent_output_data.scriptPubKey, solutions_data);
@@ -1111,6 +1155,8 @@ BlockToSql::BlockToSql(
             addresses_string_stream << address_string << ","; // address
             addresses_string_stream << -spent_output_data.nValue << "\n"; // amount
         }
+
+        change_flow_stats.AddTransaction(*transaction, spent_coins, block_index->nHeight);
 
         outputs_count += transaction_data.m_transaction->vout.size();
         inputs_count += transaction_data.m_transaction->vin.size();
@@ -1323,7 +1369,12 @@ BlockToSql::BlockToSql(
 
                                              "coin_days_destroyed, "
                                              "spent_age_bands, "
-                                             "oldest_spent_height"
+                                             "oldest_spent_height, "
+
+                                             "self_change_outputs_count, "
+                                             "self_change_value_sats, "
+                                             "forward_outputs_count, "
+                                             "forward_value_sats"
 
                                              ") "
 
@@ -1440,7 +1491,12 @@ BlockToSql::BlockToSql(
 
                                              "$87, "                          // coin_days_destroyed
                                              "$88, "                          // spent_age_bands
-                                             "NULLIF($89::text, '')::bigint " // oldest_spent_height
+                                             "NULLIF($89::text, '')::bigint, " // oldest_spent_height
+
+                                             "$90, " // self_change_outputs_count
+                                             "$91, " // self_change_value_sats
+                                             "$92, " // forward_outputs_count
+                                             "$93 "  // forward_value_sats
 
                                              ") ON CONFLICT DO NOTHING RETURNING 1;");
     auto r3{enterprise::ExecPrepared(
@@ -1556,7 +1612,12 @@ BlockToSql::BlockToSql(
 
         spent_age_stats.CoinDaysDestroyed(),
         spent_age_stats.BandsJson(),
-        OptionalHeightParam(spent_age_stats.OldestSpentHeight())
+        OptionalHeightParam(spent_age_stats.OldestSpentHeight()),
+
+        change_flow_stats.SelfChangeOutputs(),
+        change_flow_stats.SelfChangeValue(),
+        change_flow_stats.ForwardOutputs(),
+        change_flow_stats.ForwardValue()
 
         )};
     if (r3.size() != 1) {

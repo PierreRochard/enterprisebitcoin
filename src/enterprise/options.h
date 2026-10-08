@@ -18,9 +18,10 @@ static constexpr int DEFAULT_ENTERPRISE_PRICE_FINALIZATION_BATCH_SIZE{256};
 // target ten-minute interval and remains comfortably inside the configured
 // 20 GiB pruned block store for the expected one-day finalization delay.
 static constexpr int DEFAULT_ENTERPRISE_PRICE_FINALIZATION_LOOKBACK{2016};
-static constexpr bool DEFAULT_ENTERPRISE_SPENT_AGE_BACKFILL{true};
-//! The spent-age backfill walks down from the tip this many heights at a time.
-static constexpr int ENTERPRISE_SPENT_AGE_BACKFILL_RANGE{1008};
+//! Fill block columns added after rows were written: spent-coin age and change flows.
+static constexpr bool DEFAULT_ENTERPRISE_COLUMN_BACKFILL{true};
+//! The column backfill walks down from the tip this many heights at a time.
+static constexpr int ENTERPRISE_COLUMN_BACKFILL_RANGE{1008};
 //! Snapshot the live UTXO set into Postgres this often. 4032 blocks is four
 //! weeks at 1008 blocks/week and matches the historical utxo_age series.
 static constexpr int64_t UTXO_EXPORT_INTERVAL{4032};

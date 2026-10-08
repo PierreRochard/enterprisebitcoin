@@ -117,7 +117,12 @@ CREATE TABLE blocks
 
     coin_days_destroyed                             DOUBLE PRECISION,
     spent_age_bands                                 JSONB,
-    oldest_spent_height                             BIGINT
+    oldest_spent_height                             BIGINT,
+
+    self_change_outputs_count                       BIGINT,
+    self_change_value_sats                          BIGINT,
+    forward_outputs_count                           BIGINT,
+    forward_value_sats                              BIGINT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS blocks_network_height_idx ON blocks(network, height);
@@ -174,6 +179,13 @@ INSERT INTO enterprise_schema_migrations (version, description)
 VALUES (
     '20261005_spent_coin_age',
     'Spent-coin age columns on blocks'
+)
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO enterprise_schema_migrations (version, description)
+VALUES (
+    '20261008_change_flows',
+    'Change-flow columns on blocks'
 )
 ON CONFLICT (version) DO NOTHING;
 

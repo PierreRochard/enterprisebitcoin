@@ -35,6 +35,31 @@ restarts from the tip after a restart (filled ranges are skipped by one indexed
 query each), and leaves rows for pruned blocks NULL. Only the three block-level
 columns are backfilled; historical `input_data` is not rewritten.
 
+Change flows
+==
+
+Raw output value counts every output as if it were paid to someone else.
+Two pairs of block columns measure the part a block's transactions send back to
+their own wallets:
+
+- `self_change_outputs_count`, `self_change_value_sats`: outputs paying a
+  script that one of the same transaction's inputs spends, which is change
+  returned to a reused address. Exact for every script type, taproot included,
+  because the writer sees each spent coin.
+- `forward_outputs_count`, `forward_value_sats`: the kept output of a same-day
+  forward. A forward is a transaction with one input and exactly two outputs
+  that spends a coin of at least 100 BTC created fewer than 144 blocks earlier
+  and passes at least 99% of it to a different script. This catches a wallet
+  moving a large, freshly received coin to a new address of its own, as the
+  2021-22 hop chains did hundreds of times a day.
+
+The two never count the same output, because a forward's kept output pays a
+different script than the coin it spends. Apply
+`migrations/20261008_change_flows.sql` after the spent-age migration and
+before starting a node built with these columns. The same idle backfill fills
+NULL change-flow columns from the block and its undo data, and fills any NULL
+spent-age columns in the same pass.
+
 UTXO age histograms
 ==
 

@@ -144,6 +144,7 @@ if(WITH_ENTERPRISE_SQL)
   target_sources(test_bitcoin PRIVATE
     enterprise_block_spool_tests.cpp
     enterprise_bootstrap_tests.cpp
+    enterprise_change_flow_tests.cpp
     enterprise_denomination_classifier_tests.cpp
     enterprise_pg_config_tests.cpp
     enterprise_spent_age_tests.cpp

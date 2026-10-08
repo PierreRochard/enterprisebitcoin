@@ -637,6 +637,10 @@ void ValidateEnterpriseSchema()
         {"coin_days_destroyed", "double precision"},
         {"spent_age_bands", "jsonb"},
         {"oldest_spent_height", "bigint"},
+        {"self_change_outputs_count", "bigint"},
+        {"self_change_value_sats", "bigint"},
+        {"forward_outputs_count", "bigint"},
+        {"forward_value_sats", "bigint"},
     };
     RequireInsertColumns(w, "blocks", block_insert_columns);
     RejectBlockingExtraColumns(w, "blocks", ColumnNames(block_insert_columns));
@@ -1104,7 +1108,7 @@ std::vector<BlockRowKey> FindPriceFinalizationCandidates(
     return candidates;
 }
 
-std::vector<BlockRowKey> FindSpentAgeBackfillCandidates(
+std::vector<BlockRowKey> FindColumnBackfillCandidates(
     PgSession& session,
     pqxx::work& work,
     int min_height,
@@ -1113,17 +1117,17 @@ std::vector<BlockRowKey> FindSpentAgeBackfillCandidates(
     std::vector<BlockRowKey> candidates;
     if (min_height > max_height) return candidates;
 
-    session.Prepare("EnterpriseSpentAgeBackfillCandidates", R"sql(
+    session.Prepare("EnterpriseColumnBackfillCandidates", R"sql(
         SELECT height, hash
         FROM blocks
         WHERE network = $1
           AND height BETWEEN $2 AND $3
-          AND coin_days_destroyed IS NULL
+          AND (coin_days_destroyed IS NULL OR self_change_value_sats IS NULL)
         ORDER BY height DESC
     )sql");
     const pqxx::result result{enterprise::ExecPrepared(
         work,
-        "EnterpriseSpentAgeBackfillCandidates",
+        "EnterpriseColumnBackfillCandidates",
         Network(),
         min_height,
         max_height)};
@@ -1132,7 +1136,7 @@ std::vector<BlockRowKey> FindSpentAgeBackfillCandidates(
         const auto hash{uint256::FromHex(row[1].as<std::string>())};
         if (!hash) {
             throw std::runtime_error(strprintf(
-                "public.blocks contains an invalid hash at spent-age backfill height %d",
+                "public.blocks contains an invalid hash at column backfill height %d",
                 row[0].as<int>()));
         }
         candidates.push_back(BlockRowKey{row[0].as<int>(), *hash});

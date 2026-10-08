@@ -74,10 +74,11 @@ void DeleteBlockFromSql(enterprise::PgSession& session, pqxx::work& work, const 
     pqxx::work& work,
     const CBlockIndex& block_index,
     const CBlock& block);
-//! Fill coin_days_destroyed, spent_age_bands and oldest_spent_height on a row
-//! written before those columns existed. Returns false when the row is absent,
-//! holds another block, or already has them.
-[[nodiscard]] bool BackfillBlockSpentAge(
+//! Fill the spent-coin age columns (coin_days_destroyed, spent_age_bands,
+//! oldest_spent_height) and the change-flow columns (self_change_*, forward_*)
+//! that are still NULL on a row written before they existed. Returns false when
+//! the row is absent, holds another block, or already has them all.
+[[nodiscard]] bool BackfillBlockColumns(
     enterprise::PgSession& session,
     pqxx::work& work,
     const CBlockIndex& block_index,

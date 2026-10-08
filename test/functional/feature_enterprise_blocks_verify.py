@@ -47,6 +47,8 @@ MIGRATION = REPO_ROOT / "src" / "enterprise" / "migrations" / f"{MIGRATION_VERSI
 MIGRATION_VERIFY = REPO_ROOT / "src" / "enterprise" / "migrations" / f"verify_{MIGRATION_VERSION}.sql"
 SPENT_AGE_MIGRATION_VERSION = "20261005_spent_coin_age"
 SPENT_AGE_MIGRATION = REPO_ROOT / "src" / "enterprise" / "migrations" / f"{SPENT_AGE_MIGRATION_VERSION}.sql"
+CHANGE_FLOW_MIGRATION_VERSION = "20261008_change_flows"
+CHANGE_FLOW_MIGRATION = REPO_ROOT / "src" / "enterprise" / "migrations" / f"{CHANGE_FLOW_MIGRATION_VERSION}.sql"
 
 DENOMINATION_COLUMNS = [
     "btc_usd_price",
@@ -76,6 +78,13 @@ SPENT_AGE_COLUMNS = [
     "oldest_spent_height",
 ]
 
+CHANGE_FLOW_COLUMNS = [
+    "self_change_outputs_count",
+    "self_change_value_sats",
+    "forward_outputs_count",
+    "forward_value_sats",
+]
+
 
 class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
     def set_test_params(self):
@@ -97,7 +106,7 @@ class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
         self.enterprise_config_path = Path(self.enterprise_config)
         if not self.enterprise_config_path.exists():
             raise SkipTest(f"enterprise test config does not exist: {self.enterprise_config_path}")
-        for required_sql in [MIGRATION, MIGRATION_VERIFY, SPENT_AGE_MIGRATION]:
+        for required_sql in [MIGRATION, MIGRATION_VERIFY, SPENT_AGE_MIGRATION, CHANGE_FLOW_MIGRATION]:
             if not required_sql.is_file():
                 raise SkipTest(f"enterprise migration fixture does not exist: {required_sql}")
 
@@ -177,6 +186,8 @@ class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
         self.run_sql_file(MIGRATION_VERIFY)
         self.run_sql_file(SPENT_AGE_MIGRATION)
         self.run_sql_file(SPENT_AGE_MIGRATION)
+        self.run_sql_file(CHANGE_FLOW_MIGRATION)
+        self.run_sql_file(CHANGE_FLOW_MIGRATION)
 
         # Both the node and verifier must treat the explicit config as
         # authoritative even when the parent process has hostile libpq
@@ -230,11 +241,11 @@ class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
         self.run_sql_file(REPO_ROOT / "src" / "enterprise" / "schema.sql")
 
         drop_columns = ",\n".join(
-            f"DROP COLUMN {column}" for column in DENOMINATION_COLUMNS + SPENT_AGE_COLUMNS
+            f"DROP COLUMN {column}" for column in DENOMINATION_COLUMNS + SPENT_AGE_COLUMNS + CHANGE_FLOW_COLUMNS
         )
         self.psql.query(f"""
             DELETE FROM public.enterprise_schema_migrations
-            WHERE version = '{SPENT_AGE_MIGRATION_VERSION}';
+            WHERE version IN ('{SPENT_AGE_MIGRATION_VERSION}', '{CHANGE_FLOW_MIGRATION_VERSION}');
             ALTER TABLE public.blocks
                 ADD COLUMN enterprise_test_sentinel TEXT,
                 {drop_columns};
@@ -491,13 +502,13 @@ class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
         assert_equal(self.sql_scalar("SELECT count(*) FROM prices"), "36526")
         self.assert_enterprise_column_exists("blocks", "enterprise_test_sentinel")
         assert_equal(self.sql_scalar("SELECT to_regclass('public.enterprise_test_blocks_view') IS NOT NULL"), "t")
-        for column in DENOMINATION_COLUMNS + SPENT_AGE_COLUMNS:
+        for column in DENOMINATION_COLUMNS + SPENT_AGE_COLUMNS + CHANGE_FLOW_COLUMNS:
             self.assert_enterprise_column_exists("blocks", column)
         assert_equal(self.sql_scalar(f"""
             SELECT count(*)
             FROM enterprise_schema_migrations
-            WHERE version = '{SPENT_AGE_MIGRATION_VERSION}'
-        """), "1")
+            WHERE version IN ('{SPENT_AGE_MIGRATION_VERSION}', '{CHANGE_FLOW_MIGRATION_VERSION}')
+        """), "2")
         for table in ["enterprise_block_ingest", "enterprise_block_gaps", "mempool_entries"]:
             assert_equal(self.sql_scalar(f"SELECT to_regclass('public.{table}') IS NOT NULL"), "t")
         assert_equal(self.sql_scalar("""
@@ -568,6 +579,19 @@ class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
         assert_equal(int(spent_age_row[4]), 1)
         assert_equal(int(spent_age_row[5]), 1)
         assert_equal(spent_age_row[6], "t")
+
+        self.log.info("Verify the self-transfer counts as self-change, not as a forward")
+        # MiniWallet pays itself, so the one output returns to the script its input spent.
+        self_transfer_value = sum(
+            int(Decimal(str(out["value"])) * 100_000_000) for out in node.decoderawtransaction(tx["hex"])["vout"]
+        )
+        assert_equal(self.sql_scalar(f"""
+            SELECT concat(self_change_outputs_count, ',', self_change_value_sats, ',',
+                          forward_outputs_count, ',', forward_value_sats)
+            FROM blocks
+            WHERE network = 'regtest'
+              AND height = {tip_height}
+        """), f"1,{self_transfer_value},0,0")
 
         self.log.info("Verify the materialized-view price compatibility fallback")
         denomination_row = self.psql.query_rows(f"""
@@ -1323,29 +1347,31 @@ class EnterpriseBlocksVerifyTest(BitcoinTestFramework):
             },
         })
 
-        self.log.info("Clear the spent-age columns and verify the writer backfills them")
-        expected_spent_age = self.psql.query_rows("""
-            SELECT height, coin_days_destroyed, spent_age_bands::text, oldest_spent_height
+        self.log.info("Clear the spent-age and change-flow columns and verify the writer backfills them")
+        backfilled = f"""
+            SELECT height, coin_days_destroyed, spent_age_bands::text, oldest_spent_height,
+                   {", ".join(CHANGE_FLOW_COLUMNS)}
             FROM blocks
             WHERE network = 'regtest'
             ORDER BY height
-        """)
-        self.psql.query("""
+        """
+        expected_backfill = self.psql.query_rows(backfilled)
+        # Odd heights lose only the change-flow columns, as on a node upgraded
+        # after the spent-age backfill finished; even heights lose both groups.
+        self.psql.query(f"""
             UPDATE blocks
             SET coin_days_destroyed = NULL, spent_age_bands = NULL, oldest_spent_height = NULL
+            WHERE network = 'regtest' AND height % 2 = 0;
+            UPDATE blocks
+            SET {", ".join(f"{column} = NULL" for column in CHANGE_FLOW_COLUMNS)}
             WHERE network = 'regtest';
         """)
         self.restart_node(0, extra_args=outage_args)
         self.wait_until(lambda: self.sql_scalar("""
             SELECT count(*) FROM blocks
-            WHERE network = 'regtest' AND coin_days_destroyed IS NULL
+            WHERE network = 'regtest' AND (coin_days_destroyed IS NULL OR self_change_value_sats IS NULL)
         """) == "0", timeout=120)
-        assert_equal(self.psql.query_rows("""
-            SELECT height, coin_days_destroyed, spent_age_bands::text, oldest_spent_height
-            FROM blocks
-            WHERE network = 'regtest'
-            ORDER BY height
-        """), expected_spent_age)
+        assert_equal(self.psql.query_rows(backfilled), expected_backfill)
         assert_equal(self.sql_scalar("""
             SELECT count(*)
             FROM blocks

@@ -47,12 +47,12 @@ private:
     bool m_bootstrap_from_postgres{false};
     bool m_reindex_with_pending_spool{false};
     std::set<std::pair<int, std::string>> m_price_finalization_deferred;
-    bool m_spent_age_backfill{DEFAULT_ENTERPRISE_SPENT_AGE_BACKFILL};
-    //! Next height the spent-age backfill checks, walking down; unset until
-    //! the first pass and -1 once it reaches genesis.
-    std::optional<int> m_spent_age_backfill_height;
-    uint64_t m_spent_age_backfill_filled{0};
-    uint64_t m_spent_age_backfill_unavailable{0};
+    bool m_column_backfill{DEFAULT_ENTERPRISE_COLUMN_BACKFILL};
+    //! Next height the column backfill checks, walking down; unset until the
+    //! first pass and -1 once it reaches genesis.
+    std::optional<int> m_column_backfill_height;
+    uint64_t m_column_backfill_filled{0};
+    uint64_t m_column_backfill_unavailable{0};
 
     bool AllowPrune() const override { return true; }
 
@@ -67,13 +67,13 @@ private:
     bool ProcessSpoolFile(enterprise::PgSession& session, const fs::path& path, ConnectRowCoverage coverage = ConnectRowCoverage::CHECK);
     bool ReconcileGaps();
     bool FinalizeAvailablePrices(enterprise::PgSession& session);
-    bool BackfillSpentAge(enterprise::PgSession& session);
+    bool BackfillColumns(enterprise::PgSession& session);
     bool QueueLocalBackfill(const CBlockIndex& block_index);
     std::string IngestSource(const EnterpriseBlockDelta& delta) const;
 
     NodeClock::time_point m_next_gap_scan{};
     NodeClock::time_point m_next_price_finalization_scan{};
-    NodeClock::time_point m_next_spent_age_backfill{};
+    NodeClock::time_point m_next_column_backfill{};
 
 protected:
     void BlockDisconnected(const std::shared_ptr<const CBlock>& block, const CBlockIndex* pindex) override;

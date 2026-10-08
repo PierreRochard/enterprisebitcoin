@@ -85,8 +85,9 @@ void ReconcileCoveredIngest(PgSession& session, pqxx::work& work, const Enterpri
     int min_height,
     int max_height,
     std::size_t limit);
-//! Rows in [min_height, max_height] without spent-coin age columns, highest first.
-[[nodiscard]] std::vector<BlockRowKey> FindSpentAgeBackfillCandidates(
+//! Rows in [min_height, max_height] missing spent-coin age or change-flow
+//! columns, highest first.
+[[nodiscard]] std::vector<BlockRowKey> FindColumnBackfillCandidates(
     PgSession& session,
     pqxx::work& work,
     int min_height,
